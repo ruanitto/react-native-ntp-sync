@@ -1,10 +1,18 @@
-import { Config, Delta, NtpDelta, NtpHistory, NtpServer } from "./types";
+import type {
+  Config,
+  Delta,
+  NtpDelta,
+  NtpHistoryChangeHandler,
+  NtpHistory,
+  NtpServer,
+} from './internals/types';
 
-import { NtpClientError } from "./error";
-import { getNetworkTime } from "./client";
+import { NtpClientError } from './internals/error';
+import { getNetworkTime } from './internals/client';
+import DEFAULT_CONFIG from './internals/default-config';
 
 export default class NTPSync {
-  private ntpServers: Array<NtpServer>;
+  private ntpServers: NtpServer[];
   private limit: number;
   private tickRate: number;
   private syncTimeout: number;
@@ -12,32 +20,18 @@ export default class NTPSync {
   private tickId: number | null = null;
   private historyDetails: NtpHistory;
   private isOnline: boolean;
-  private callbackDelta: Config['callbackDelta']
-  private callbackNTPTime: Config['callbackNTPTime']
 
-  public constructor({
-    servers = [
-      { server: "time.google.com", port: 123 },
-      { server: "time.windows.com", port: 123 },
-      { server: "time.cloudflare.com", port: 123 },
-      { server: "0.pool.ntp.org", port: 123 },
-      { server: "1.pool.ntp.org", port: 123 },
-    ],
-    history = 10,
-    syncInterval = 300 * 1000,
-    syncTimeout = 10 * 1000,
-    syncOnCreation = true,
-    autoSync = true,
-    startOnline = true,
-    callbackDelta,
-    callbackNTPTime
-  }: Config = {}) {
-    this.ntpServers = servers;
-    this.limit = history;
-    this.tickRate = syncInterval;
-    this.syncTimeout = syncTimeout;
-    this.callbackDelta = callbackDelta;
-    this.callbackNTPTime = callbackNTPTime;
+  private listeners = new Set<NtpHistoryChangeHandler>();
+
+  private config: Config;
+
+  public constructor(config?: Partial<Config>) {
+    this.config = Object.assign(DEFAULT_CONFIG, config);
+
+    this.ntpServers = this.config.servers;
+    this.limit = this.config.history;
+    this.tickRate = this.config.syncInterval;
+    this.syncTimeout = this.config.syncTimeout;
 
     this.historyDetails = {
       currentConsecutiveErrorCount: 0,
@@ -52,13 +46,13 @@ export default class NTPSync {
       maxConsecutiveErrorCount: 0,
     };
 
-    this.isOnline = startOnline;
+    this.isOnline = this.config.startOnline;
 
-    if (syncOnCreation && startOnline) {
+    if (this.config.syncOnCreation && this.config.startOnline) {
       this.syncTime();
     }
 
-    if (autoSync) {
+    if (this.config.autoSync) {
       this.startAutoSync();
     }
   }
@@ -98,12 +92,15 @@ export default class NTPSync {
   }
 
   public getIsOnline() {
-    return this.isOnline
+    return this.isOnline;
   }
 
   public getDelta = async (): Promise<NtpDelta> => {
     if (this.isOnline) {
-      const fetchingServer = Object.assign({}, this.historyDetails.currentServer);
+      const fetchingServer = Object.assign(
+        {},
+        this.historyDetails.currentServer
+      );
 
       try {
         const ntpDate = await getNetworkTime(
@@ -111,10 +108,6 @@ export default class NTPSync {
           this.historyDetails.currentServer.port,
           this.syncTimeout
         );
-
-        if (typeof this.callbackNTPTime === 'function') {
-          this.callbackNTPTime(ntpDate.getTime())
-        }
 
         const delta = this.computeAndUpdate(ntpDate);
 
@@ -128,7 +121,7 @@ export default class NTPSync {
         throw new NtpClientError(err, fetchingServer);
       }
     } else {
-      return { delta: 0 }
+      return { delta: 0 };
     }
   };
 
@@ -167,19 +160,16 @@ export default class NTPSync {
 
       this.tickId = null;
     }
-  }
+  };
 
   public syncTime = async (): Promise<boolean> => {
     if (this.isOnline) {
       try {
         const delta = await this.getDelta();
 
-        if (typeof this.callbackDelta === 'function') {
-          this.callbackDelta(delta)
-        }
-
         this.historyDetails.currentConsecutiveErrorCount = 0;
         this.historyDetails.isInErrorState = false;
+
         return true;
       } catch (err: any) {
         const ed = {
@@ -212,6 +202,14 @@ export default class NTPSync {
 
     return false;
   };
+
+  public addListener(listener: NtpHistoryChangeHandler) {
+    this.listeners.add(listener);
+  }
+
+  // public removeListener(listener: NtpDeltaChangeHandler) {
+  //   this.listeners.delete(listener);
+  // };
 }
 
 export { Config, Delta, NtpDelta, NtpHistory, NtpServer, NtpClientError };
