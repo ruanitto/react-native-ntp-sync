@@ -1,13 +1,11 @@
 export type Config = {
-  autoSync?: boolean;
-  startOnline?: boolean;
-  history?: number;
-  servers?: Array<NtpServer>;
-  syncInterval?: number;
-  syncOnCreation?: boolean;
-  syncTimeout?: number;
-  callbackDelta?: (delta: NtpDelta) => void
-  callbackNTPTime?: (ntpTime: number) => void
+  autoSync: boolean;
+  startOnline: boolean;
+  history: number;
+  servers: NtpServer[];
+  syncInterval: number;
+  syncOnCreation: boolean;
+  syncTimeout: number;
 };
 
 export type NtpServer = {
@@ -28,8 +26,8 @@ export type NtpDelta = {
 export type NtpHistory = {
   currentConsecutiveErrorCount: number;
   currentServer: NtpServer;
-  deltas: Array<Delta>;
-  errors: Array<Error>;
+  deltas: Delta[];
+  errors: Error[];
   isInErrorState: boolean;
   lastSyncTime: number | null;
   lastNtpTime: number | null;
@@ -37,3 +35,5 @@ export type NtpHistory = {
   lifetimeErrorCount: number;
   maxConsecutiveErrorCount: number;
 };
+
+export type NtpHistoryChangeHandler = (delta: NtpHistory) => void
