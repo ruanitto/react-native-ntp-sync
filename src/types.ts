@@ -6,6 +6,8 @@ export type Config = {
   syncInterval?: number;
   syncOnCreation?: boolean;
   syncTimeout?: number;
+  callbackDelta?: (delta: NtpDelta) => void
+  callbackNTPTime?: (ntpTime: number) => void
 };
 
 export type NtpServer = {
