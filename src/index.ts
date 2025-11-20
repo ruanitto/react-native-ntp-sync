@@ -170,6 +170,8 @@ export default class NTPSync {
         this.historyDetails.currentConsecutiveErrorCount = 0;
         this.historyDetails.isInErrorState = false;
 
+        this.listeners.forEach((handler): void => handler(this.getHistory()));
+
         return true;
       } catch (err: any) {
         const ed = {
