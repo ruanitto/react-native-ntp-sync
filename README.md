@@ -76,7 +76,8 @@ The client constructor can accept the following options. **all options are optio
 - `startOnline` (boolean) : A flag to control network activity upon clockSync instantiation. Defaults to `true`. (immediate NTP server fetch attempt)
 - `syncOnCreation` (boolean) : A flag to control the NTP sync upon instantiation. Defaults to `true`. (immediate NTP server fetch attempt if startOnline is true)
 - `syncTimeout` (+number) : The timeout (in milliseconds) that will be used in every NTP syncronization . Defaults to 10 seconds
-
+- `callbackDelta` (delta: NtpDelta) => void : callback function to receive NtpDelta object every online sync.
+- `callbackNTPTime` (ntpTime: number) => void : callback function to receive the time (in milliseconds) every online sync.
 ```javascript
 {
   "history": 10,
