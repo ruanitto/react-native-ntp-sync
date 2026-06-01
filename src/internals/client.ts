@@ -96,7 +96,9 @@ export const getNetworkTime = async (
         const t2 = parseNtpTimestamp(msg, 32);
         const t3 = parseNtpTimestamp(msg, 40);
 
-        if (t2 === 0 || t3 === 0) {
+        // Reject implausible timestamps: NTP epoch (all zeros) or before year 2000
+        const MIN_VALID_MS = Date.UTC(2000, 0, 1);
+        if (t2 < MIN_VALID_MS || t3 < MIN_VALID_MS) {
           throw new Error("NTP server returned zero timestamps");
         }
 
