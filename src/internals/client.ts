@@ -1,6 +1,9 @@
 import { Buffer } from "buffer";
 import dgram from "react-native-udp";
 
+// NTP epoch offset: seconds between 1900-01-01 and 1970-01-01
+const NTP_EPOCH_OFFSET_MS = 2208988800000;
+
 const getError = (obj: any): Error => {
   if (!obj) {
     return new Error("unknown error");
@@ -15,9 +18,25 @@ const getError = (obj: any): Error => {
 };
 
 /**
- * Gets the current time from the parsed NTP Server.
+ * Parse a 64-bit NTP timestamp at `offset` in `msg` → milliseconds since Unix epoch.
+ */
+const parseNtpTimestamp = (msg: Buffer, offset: number): number => {
+  let intpart = 0;
+  let fractpart = 0;
+  for (let i = 0; i < 4; i++) {
+    intpart = (intpart * 256 + msg[offset + i]) >>> 0;
+  }
+  for (let i = 4; i < 8; i++) {
+    fractpart = (fractpart * 256 + msg[offset + i]) >>> 0;
+  }
+  return intpart * 1000 + (fractpart * 1000) / 0x100000000 - NTP_EPOCH_OFFSET_MS;
+};
+
+/**
+ * Gets the current time from the NTP server, compensating for network round-trip delay.
  * @param {String} server IP/Hostname of the NTP server
  * @param {Number} port Port of the NTP server
+ * @param {Number} serverTimeout Timeout in ms
  */
 export const getNetworkTime = async (
   server: string,
@@ -30,26 +49,22 @@ export const getNetworkTime = async (
       debug: false,
     });
 
+    // NTPv3 client request packet
     const ntpData = Buffer.alloc(48);
-    ntpData[0] = 0x1b;
-    for (let i = 1; i < 48; i++) {
-      ntpData[i] = 0;
-    }
+    ntpData[0] = 0x1b; // LI=0, VN=3, Mode=3 (client)
 
     let errorFired = false;
+    // T1: client send time (recorded just before send)
+    let t1 = 0;
 
     const timeout = setTimeout(() => {
       errorFired = true;
       client.close();
-
       reject(new Error("timed out waiting for response"));
     }, serverTimeout);
 
     client.on("error", err => {
-      if (errorFired) {
-        return;
-      }
-
+      if (errorFired) return;
       errorFired = true;
       clearTimeout(timeout);
       client.close();
@@ -57,39 +72,49 @@ export const getNetworkTime = async (
     });
 
     client.once("message", msg => {
+      // T4: client receive time
+      const t4 = Date.now();
       clearTimeout(timeout);
       client.close();
 
       try {
-        let offsetTransmitTime = 40,
-          intpart = 0,
-          fractpart = 0;
-
-        for (let i = 0; i <= 3; i++) {
-          intpart = 256 * intpart + msg[offsetTransmitTime + i];
+        if (msg.length < 48) {
+          throw new Error("NTP response too short");
         }
 
-        for (let i = 4; i <= 7; i++) {
-          fractpart = 256 * fractpart + msg[offsetTransmitTime + i];
+        // Validate: LI != 3 (unsynchronized), stratum must be 1-15
+        const li = (msg[0] >> 6) & 0x3;
+        const stratum = msg[1];
+        if (li === 3) {
+          throw new Error("NTP server is unsynchronized (LI=3)");
+        }
+        if (stratum === 0 || stratum > 15) {
+          throw new Error(`NTP server invalid stratum: ${stratum}`);
         }
 
-        let milliseconds = intpart * 1000 + (fractpart * 1000) / 0x100000000;
+        // T2: server receive time (offset 32), T3: server transmit time (offset 40)
+        const t2 = parseNtpTimestamp(msg, 32);
+        const t3 = parseNtpTimestamp(msg, 40);
 
-        let date = new Date(Date.UTC(1900, 0, 1));
-        date.setUTCMilliseconds(date.getUTCMilliseconds() + milliseconds);
+        if (t2 === 0 || t3 === 0) {
+          throw new Error("NTP server returned zero timestamps");
+        }
 
-        resolve(date);
+        // Round-trip delay compensation: offset = ((T2-T1) + (T3-T4)) / 2
+        const offset = ((t2 - t1) + (t3 - t4)) / 2;
+        const correctedTime = t4 + offset;
+
+        resolve(new Date(correctedTime));
       } catch (err) {
         reject(getError(err));
       }
     });
 
     client.once("listening", () => {
+      t1 = Date.now(); // record T1 as close to send as possible
       client.send(ntpData, 0, ntpData.length, port, server, err => {
         if (err) {
-          if (errorFired) {
-            return;
-          }
+          if (errorFired) return;
           errorFired = true;
           clearTimeout(timeout);
           client.close();
