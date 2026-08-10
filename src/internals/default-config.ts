@@ -14,6 +14,7 @@ const DEFAULT_CONFIG: Config = {
   syncOnCreation: true,
   autoSync: true,
   startOnline: true,
+  appStateSync: true,
 };
 
 export default DEFAULT_CONFIG;

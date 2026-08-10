@@ -7,9 +7,26 @@ import {
 } from '../__mocks__/react-native-udp';
 import type { NtpHistory } from '../internals/types';
 
+// react-native is not installed in this repo — mock only what index.ts uses
+jest.mock(
+  'react-native',
+  () => ({
+    AppState: {
+      addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+    },
+  }),
+  { virtual: true },
+);
+
+import { AppState } from 'react-native';
+const mockAppState = AppState as unknown as {
+  addEventListener: jest.Mock;
+};
+
 // Prevent auto-sync intervals from leaking between tests
 beforeEach(() => {
   jest.useFakeTimers();
+  mockAppState.addEventListener.mockClear();
 });
 
 afterEach(() => {
@@ -90,14 +107,16 @@ describe('getTime', () => {
   it('uses median delta to reject outliers', async () => {
     const sync = makeSync({ history: 5 });
 
-    // Inject 5 deltas manually: 4 consistent + 1 extreme outlier
-    const deltas = (sync as any).historyDetails.deltas as Array<{ dt: number; ntp: number }>;
+    // Inject 5 deltas manually: 4 consistent + 1 extreme outlier.
+    // ntp and monotonic are anchored to "now" so the projection is exact.
+    const deltas = (sync as any).historyDetails.deltas as Array<{ dt: number; ntp: number; monotonic: number }>;
     const now = Date.now();
-    deltas.push({ dt: 100, ntp: now });
-    deltas.push({ dt: 110, ntp: now });
-    deltas.push({ dt: 90,  ntp: now });
-    deltas.push({ dt: 105, ntp: now });
-    deltas.push({ dt: 50000, ntp: now }); // outlier
+    const perfNow = performance.now();
+    deltas.push({ dt: 100, ntp: now + 100, monotonic: perfNow });
+    deltas.push({ dt: 110, ntp: now + 110, monotonic: perfNow });
+    deltas.push({ dt: 90,  ntp: now + 90,  monotonic: perfNow });
+    deltas.push({ dt: 105, ntp: now + 105, monotonic: perfNow });
+    deltas.push({ dt: 50000, ntp: now + 50000, monotonic: perfNow }); // outlier
 
     // Median of [90, 100, 105, 110, 50000] = 105
     const result = sync.getTime();
@@ -106,16 +125,35 @@ describe('getTime', () => {
 
   it('median works with even number of deltas', async () => {
     const sync = makeSync({ history: 4 });
-    const deltas = (sync as any).historyDetails.deltas as Array<{ dt: number; ntp: number }>;
+    const deltas = (sync as any).historyDetails.deltas as Array<{ dt: number; ntp: number; monotonic: number }>;
     const now = Date.now();
-    deltas.push({ dt: 100, ntp: now });
-    deltas.push({ dt: 200, ntp: now });
-    deltas.push({ dt: 300, ntp: now });
-    deltas.push({ dt: 400, ntp: now });
+    const perfNow = performance.now();
+    deltas.push({ dt: 100, ntp: now + 100, monotonic: perfNow });
+    deltas.push({ dt: 200, ntp: now + 200, monotonic: perfNow });
+    deltas.push({ dt: 300, ntp: now + 300, monotonic: perfNow });
+    deltas.push({ dt: 400, ntp: now + 400, monotonic: perfNow });
 
     // Median of [100,200,300,400] = (200+300)/2 = 250
     const result = sync.getTime();
     expect(Math.abs(result - (Date.now() + 250))).toBeLessThan(50);
+  });
+
+  it('does not jump when the device clock is manually changed', async () => {
+    const serverTime = Date.now() + 5000;
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync();
+
+    await sync.syncTime();
+    const before = sync.getTime();
+
+    // Simulate the user changing the device clock (+1 hour)
+    const realNow = Date.now;
+    jest.spyOn(Date, 'now').mockReturnValue(realNow() + 3_600_000);
+    const after = sync.getTime();
+    jest.restoreAllMocks();
+
+    // getTime() is anchored to the monotonic clock, so it must not jump
+    expect(Math.abs(after - before)).toBeLessThan(100);
   });
 });
 
@@ -331,6 +369,66 @@ describe('autoSync', () => {
   });
 });
 
+describe('AppState / background handling', () => {
+  it('subscribes to AppState changes by default', () => {
+    makeSync();
+    expect(mockAppState.addEventListener).toHaveBeenCalledWith(
+      'change',
+      expect.any(Function),
+    );
+  });
+
+  it('does not subscribe when appStateSync=false', () => {
+    makeSync({ appStateSync: false });
+    expect(mockAppState.addEventListener).not.toHaveBeenCalled();
+  });
+
+  it('re-syncs when the app returns to the foreground', async () => {
+    __setNextResponse(buildNtpPacket(Date.now()));
+    const sync = makeSync();
+    const spy = jest.spyOn(sync, 'syncTime');
+
+    const handler = mockAppState.addEventListener.mock.calls[0][1];
+    handler('active');
+    await flushMicrotasks();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(sync.getHistory().deltas.length).toBeGreaterThan(0);
+  });
+
+  it('does not sync when offline', async () => {
+    const sync = makeSync({ startOnline: false });
+    const spy = jest.spyOn(sync, 'syncTime');
+
+    const handler = mockAppState.addEventListener.mock.calls[0][1];
+    handler('active');
+    await flushMicrotasks();
+
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-active states', () => {
+    const sync = makeSync();
+    const spy = jest.spyOn(sync, 'syncTime');
+
+    const handler = mockAppState.addEventListener.mock.calls[0][1];
+    handler('background');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('dispose removes the AppState subscription and stops auto-sync', () => {
+    const sync = makeSync();
+    const sub = mockAppState.addEventListener.mock.results[0].value;
+
+    sync.startAutoSync();
+    sync.dispose();
+
+    expect(sub.remove).toHaveBeenCalled();
+    expect((sync as any).appStateSub).toBeNull();
+    expect((sync as any).tickId).toBeNull();
+  });
+});
+
 describe('listeners', () => {
   it('addListener is called after successful sync', async () => {
     __setNextResponse(buildNtpPacket(Date.now()));
@@ -392,7 +490,7 @@ describe('getHistory', () => {
     await sync.syncTime();
 
     const history = sync.getHistory();
-    history.deltas.push({ dt: 99999, ntp: 0 });
+    history.deltas.push({ dt: 99999, ntp: 0, monotonic: 0 });
 
     // Internal state should be unchanged
     expect(sync.getHistory().deltas).toHaveLength(1);

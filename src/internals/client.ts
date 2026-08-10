@@ -4,6 +4,13 @@ import dgram from "react-native-udp";
 // NTP epoch offset: seconds between 1900-01-01 and 1970-01-01
 const NTP_EPOCH_OFFSET_MS = 2208988800000;
 
+export type NtpResult = {
+  // Corrected NTP time (Unix ms) anchored to the monotonic clock
+  time: number;
+  // performance.now() at the correction instant (ms)
+  monotonic: number;
+};
+
 const getError = (obj: any): Error => {
   if (!obj) {
     return new Error("unknown error");
@@ -42,7 +49,7 @@ export const getNetworkTime = async (
   server: string,
   port: number,
   serverTimeout: number
-): Promise<Date> => {
+): Promise<NtpResult> => {
   return new Promise((resolve, reject) => {
     const client = dgram.createSocket({
       type: "udp4",
@@ -54,7 +61,7 @@ export const getNetworkTime = async (
     ntpData[0] = 0x1b; // LI=0, VN=3, Mode=3 (client)
 
     let errorFired = false;
-    // T1: client send time (recorded just before send)
+    // T1: client send time on the monotonic clock (recorded just before send)
     let t1 = 0;
 
     const timeout = setTimeout(() => {
@@ -72,8 +79,8 @@ export const getNetworkTime = async (
     });
 
     client.once("message", msg => {
-      // T4: client receive time
-      const t4 = Date.now();
+      // T4: client receive time on the monotonic clock
+      const t4 = performance.now();
       clearTimeout(timeout);
       client.close();
 
@@ -106,14 +113,14 @@ export const getNetworkTime = async (
         const offset = ((t2 - t1) + (t3 - t4)) / 2;
         const correctedTime = t4 + offset;
 
-        resolve(new Date(correctedTime));
+        resolve({ time: correctedTime, monotonic: t4 });
       } catch (err) {
         reject(getError(err));
       }
     });
 
     client.once("listening", () => {
-      t1 = Date.now(); // record T1 as close to send as possible
+      t1 = performance.now(); // record T1 as close to send as possible
       client.send(ntpData, 0, ntpData.length, port, server, err => {
         if (err) {
           if (errorFired) return;

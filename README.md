@@ -9,8 +9,12 @@ React Native NTP client that fetches accurate time from the internet and keeps y
 1. Sends an NTP request to a configurable list of servers.
 2. Compensates for network round-trip delay using the standard RFC 5905 offset formula: `((T2−T1) + (T3−T4)) / 2`.
 3. Validates the server response (stratum, synchronization status, timestamp sanity).
-4. Stores a rolling history of deltas and uses the **median** to compute corrected time — outliers from unstable networks are automatically rejected.
-5. Rotates to the next server on failure and retries automatically.
+4. Anchors every sample to the **monotonic clock** (`performance.now()`), so the corrected time is computed as `ntp + (now − monotonic)`.
+5. Stores a rolling history of deltas and uses the **median** to compute corrected time — outliers from unstable networks are automatically rejected.
+6. Rotates to the next server on failure and retries automatically.
+7. Re-syncs automatically when the app returns to the foreground (`AppState`).
+
+**Why a monotonic clock?** The device wall clock (`Date.now()`) can be changed by the user or by automatic time corrections. Because `getTime()` is anchored to `performance.now()` — which cannot be changed manually — the returned time stays reliable even if the user changes the device date/time *after* the first successful sync.
 
 ---
 
@@ -79,6 +83,9 @@ const clock = new NTPSync({
 
   // Set to false to start in offline mode (no network calls)
   startOnline: true,
+
+  // Re-sync when the app returns to the foreground (AppState)
+  appStateSync: true,
 });
 ```
 
@@ -95,7 +102,7 @@ const timestamp = clock.getTime();
 console.log(new Date(timestamp).toISOString()); // e.g. "2026-06-01T12:00:00.000Z"
 ```
 
-The value is computed as `Date.now() + median(deltas)`. If no sync has occurred yet, falls back to `Date.now()`.
+The value is the **median** of each sample projected onto the monotonic clock (`ntp + (performance.now() − monotonic)`), which rejects outliers and stays correct even if the user changes the device clock. If no sync has occurred yet, falls back to `Date.now()`.
 
 ---
 
@@ -199,6 +206,18 @@ Starts the periodic sync interval. No-op if already running.
 ### `stopAutoSync(): void`
 
 Stops the periodic sync interval.
+
+---
+
+### `dispose(): void`
+
+Stops the auto-sync interval and unsubscribes from `AppState` changes. Call this when tearing down (e.g. app shutdown or unmounting a long-lived component) to avoid leaks.
+
+```typescript
+const clock = new NTPSync();
+// ... later, on cleanup:
+clock.dispose();
+```
 
 ---
 
@@ -338,8 +357,9 @@ type NtpServer = {
 };
 
 type Delta = {
-  dt: number;   // delta between NTP and local time (ms)
-  ntp: number;  // NTP server time (Unix ms)
+  dt: number;         // delta between NTP and local time (ms)
+  ntp: number;        // NTP server time (Unix ms)
+  monotonic: number;  // performance.now() at the sync instant (ms)
 };
 
 type NtpDelta = {
@@ -355,6 +375,7 @@ type Config = {
   syncInterval: number;
   syncOnCreation: boolean;
   syncTimeout: number;
+  appStateSync: boolean;
 };
 ```
 

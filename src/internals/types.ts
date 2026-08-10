@@ -6,6 +6,7 @@ export type Config = {
   syncInterval: number;
   syncOnCreation: boolean;
   syncTimeout: number;
+  appStateSync: boolean;
 };
 
 export type NtpServer = {
@@ -16,6 +17,8 @@ export type NtpServer = {
 export type Delta = {
   dt: number;
   ntp: number;
+  // performance.now() at the sync instant (ms) — monotonic anchor
+  monotonic: number;
 };
 
 export type NtpDelta = {

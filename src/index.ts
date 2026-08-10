@@ -1,3 +1,6 @@
+import { AppState } from 'react-native';
+import type { AppStateStatus } from 'react-native';
+
 import type {
   Config,
   Delta,
@@ -20,6 +23,7 @@ export default class NTPSync {
   private tickId: ReturnType<typeof setInterval> | null = null;
   private historyDetails: NtpHistory;
   private isOnline: boolean;
+  private appStateSub: { remove: () => void } | null = null;
 
   private listeners = new Set<NtpHistoryChangeHandler>();
 
@@ -56,10 +60,32 @@ export default class NTPSync {
     if (this.config.autoSync) {
       this.startAutoSync();
     }
+
+    if (this.config.appStateSync) {
+      const sub = AppState.addEventListener(
+        'change',
+        this.handleAppStateChange,
+      ) as unknown as { remove: () => void };
+      // Older React Native versions may return void here
+      if (sub && typeof sub.remove === 'function') {
+        this.appStateSub = sub;
+      }
+    }
   }
 
-  private computeAndUpdate = (ntpDate: Date): number => {
-    const tempServerTime = ntpDate.getTime();
+  /**
+   * Re-sync when the app returns to the foreground. While backgrounded the JS
+   * runtime is suspended, so the monotonic clock stops advancing; a fresh sync
+   * re-anchors the corrected time.
+   */
+  private handleAppStateChange = (nextState: AppStateStatus) => {
+    if (nextState === 'active' && this.isOnline) {
+      this.syncTime();
+    }
+  };
+
+  private computeAndUpdate = (ntpTime: number, monotonic: number): number => {
+    const tempServerTime = ntpTime;
     const tempLocalTime = Date.now();
     const dt = tempServerTime - tempLocalTime;
 
@@ -71,6 +97,7 @@ export default class NTPSync {
     this.historyDetails.deltas.push({
       dt,
       ntp: tempServerTime,
+      monotonic,
     });
 
     this.historyDetails.lastSyncTime = tempLocalTime;
@@ -102,13 +129,13 @@ export default class NTPSync {
     const fetchingServer = { ...this.historyDetails.currentServer };
 
     try {
-      const ntpDate = await getNetworkTime(
+      const { time, monotonic } = await getNetworkTime(
         this.historyDetails.currentServer.server,
         this.historyDetails.currentServer.port,
         this.syncTimeout
       );
 
-      const delta = this.computeAndUpdate(ntpDate);
+      const delta = this.computeAndUpdate(time, monotonic);
 
       return { delta, fetchingServer };
     } catch (err: any) {
@@ -128,7 +155,11 @@ export default class NTPSync {
 
   /**
    * Returns corrected current time (ms since epoch).
-   * Uses median delta to reject outliers from unstable network conditions.
+   *
+   * Each sample is projected onto the monotonic clock (`performance.now()`):
+   * `ntp + (now - monotonic)`. The median of those projections rejects
+   * outliers from unstable networks AND is immune to manual device clock
+   * changes, because it never reads `Date.now()` after the initial sync.
    */
   public getTime = (): number => {
     const { deltas } = this.historyDetails;
@@ -137,14 +168,15 @@ export default class NTPSync {
       return Date.now();
     }
 
-    const sorted = deltas.map(d => d.dt).sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    const median =
-      sorted.length % 2 === 0
-        ? Math.round((sorted[mid - 1] + sorted[mid]) / 2)
-        : sorted[mid];
+    const perfNow = performance.now();
+    const projected = deltas.map(d => d.ntp + (perfNow - d.monotonic));
 
-    return Date.now() + median;
+    const sorted = [...projected].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+
+    return sorted.length % 2 === 0
+      ? Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+      : sorted[mid];
   };
 
   private shiftServer = () => {
@@ -217,6 +249,18 @@ export default class NTPSync {
 
   public removeListener(listener: NtpHistoryChangeHandler) {
     this.listeners.delete(listener);
+  }
+
+  /**
+   * Stops the auto-sync interval and unsubscribes from AppState changes.
+   * Call when tearing down to avoid memory leaks.
+   */
+  public dispose() {
+    this.stopAutoSync();
+    if (this.appStateSub) {
+      this.appStateSub.remove();
+      this.appStateSub = null;
+    }
   }
 }
 
