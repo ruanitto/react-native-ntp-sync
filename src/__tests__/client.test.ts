@@ -12,15 +12,27 @@ describe('getNetworkTime', () => {
   const TIMEOUT = 5000;
 
   describe('successful response', () => {
-    it('returns a Date close to the server time encoded in the packet', async () => {
+    it('returns an NtpResult close to the server time encoded in the packet', async () => {
       const serverTime = Date.now();
       __setNextResponse(buildNtpPacket(serverTime));
 
       const result = await getNetworkTime(SERVER, PORT, TIMEOUT);
 
-      expect(result).toBeInstanceOf(Date);
+      expect(typeof result.time).toBe('number');
+      expect(typeof result.monotonic).toBe('number');
       // Allow ±500ms tolerance for round-trip compensation + test execution
-      expect(Math.abs(result.getTime() - serverTime)).toBeLessThan(500);
+      expect(Math.abs(result.time - serverTime)).toBeLessThan(500);
+    });
+
+    it('anchors the result to the monotonic clock', async () => {
+      __setNextResponse(buildNtpPacket(Date.now()));
+
+      const before = performance.now();
+      const result = await getNetworkTime(SERVER, PORT, TIMEOUT);
+      const after = performance.now();
+
+      expect(result.monotonic).toBeGreaterThanOrEqual(before);
+      expect(result.monotonic).toBeLessThanOrEqual(after);
     });
 
     it('applies round-trip delay compensation (offset formula)', async () => {
@@ -31,19 +43,19 @@ describe('getNetworkTime', () => {
       const result = await getNetworkTime(SERVER, PORT, TIMEOUT);
 
       // With compensation, result should be within 50ms of actual server time
-      expect(Math.abs(result.getTime() - serverTime)).toBeLessThan(250);
+      expect(Math.abs(result.time - serverTime)).toBeLessThan(250);
     });
 
     it('handles stratum 1 (primary reference)', async () => {
       __setNextResponse(buildNtpPacket(Date.now(), 1));
       const result = await getNetworkTime(SERVER, PORT, TIMEOUT);
-      expect(result).toBeInstanceOf(Date);
+      expect(typeof result.time).toBe('number');
     });
 
     it('handles stratum 15 (max valid)', async () => {
       __setNextResponse(buildNtpPacket(Date.now(), 15));
       const result = await getNetworkTime(SERVER, PORT, TIMEOUT);
-      expect(result).toBeInstanceOf(Date);
+      expect(typeof result.time).toBe('number');
     });
   });
 
