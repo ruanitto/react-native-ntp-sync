@@ -155,38 +155,45 @@ export default class NTPSync {
   };
 
   /**
-   * Import previously persisted NTP deltas, re-anchoring each sample to the
-   * current monotonic clock. Useful after app restart: persist deltas via
-   * storage (AsyncStorage, MMKV, …), then call this on next startup to
-   * maintain clock accuracy before the first network sync.
+   * Import previously persisted NTP deltas, using raw monotonic anchors.
    *
-   * Because `performance.now()` resets every session, old monotonic values
-   * cannot be used directly. Each sample is re-anchored using `wallTime`
-   * (the `Date.now()` when the NTP time was originally measured):
+   * Each delta must include `ntp` (the NTP time at sync) and `monotonic`
+   * (the `performance.now()` value at sync). Because `performance.now()` is
+   * boot-based on Android (`SystemClock.uptimeMillis`) and iOS
+   * (`mach_absolute_time()`), raw values are valid across process restarts
+   * within the same boot cycle — no re-anchoring is needed.
    *
-   *   projectedNtp = ntp + (Date.now() − wallTime)
-   *   newMonotonic = performance.now()
+   * Deltas captured before a device reboot (where the stored `monotonic`
+   * exceeds the current `performance.now()`) are automatically discarded.
    *
-   * Replaces the current delta history (oldest-first order is preserved).
+   * Replaces the current delta history (oldest-first order preserved).
    */
   public importDeltas = (deltas: DeltaImport[]): void => {
-    const now = Date.now();
     const perfNow = performance.now();
 
-    const reanchored = deltas.map(d => {
-      const wallTime = d.wallTime ?? now;
-      const ntp = d.ntp + (now - wallTime);
-      const dt = ntp - now;
-      return { dt, ntp, monotonic: perfNow };
+    // Only keep deltas from the current boot cycle
+    const valid = deltas.filter(d => perfNow >= d.monotonic);
+
+    if (valid.length === 0) {
+      return;
+    }
+
+    const reanchored = valid.map(d => {
+      const projectedNtp = d.ntp + (perfNow - d.monotonic);
+      const dt = projectedNtp - Date.now();
+      return {
+        dt,
+        ntp: d.ntp,
+        monotonic: d.monotonic,
+      };
     });
 
-    // Keep only the most recent samples within the history limit
     this.historyDetails.deltas = reanchored.slice(-this.limit);
 
     if (this.historyDetails.deltas.length > 0) {
       const last = this.historyDetails.deltas[this.historyDetails.deltas.length - 1];
       this.historyDetails.lastNtpTime = last.ntp;
-      this.historyDetails.lastSyncTime = now;
+      this.historyDetails.lastSyncTime = Date.now();
     }
   };
 

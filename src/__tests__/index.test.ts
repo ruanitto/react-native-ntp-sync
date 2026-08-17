@@ -664,82 +664,82 @@ describe('offline reliability', () => {
   });
 });
 
-describe('importDeltas', () => {
-  it('re-anchors imported deltas to the current monotonic clock', () => {
+describe('importDeltas (secure monotonic-based)', () => {
+  it('uses raw monotonic anchor — no re-anchoring via Date.now()', () => {
     const sync = makeSync({ startOnline: false });
+    const perfNow = performance.now();
+    const ntp = Date.now() + 500;
 
-    // Simulate a previous session where NTP was 500ms ahead of device clock
-    const pastWallTime = Date.now() - 10_000; // measured 10s ago
-    sync.importDeltas([
-      { ntp: pastWallTime + 500, wallTime: pastWallTime },
-    ]);
-
-    // Projected ntp = (pastWallTime+500) + (now - pastWallTime) = now + 500
-    const result = sync.getTime();
-    expect(Math.abs(result - (Date.now() + 500))).toBeLessThan(50);
-  });
-
-  it('uses Date.now() as wallTime when omitted', () => {
-    const sync = makeSync({ startOnline: false });
-    const ntp = Date.now() + 300;
-
-    sync.importDeltas([{ ntp }]);
+    // Import with monotonic from the current boot (perfNow)
+    sync.importDeltas([{ ntp, monotonic: perfNow }]);
 
     const result = sync.getTime();
+    // Projected = ntp + (currentPerfNow - perfNow) ≈ ntp + 0 = ntp
     expect(Math.abs(result - ntp)).toBeLessThan(50);
   });
 
-  it('replaces previous deltas', async () => {
-    const sync = makeSync();
+  it('reboot detection — discards deltas where monotonic > current performance.now()', () => {
+    const sync = makeSync({ startOnline: false });
 
-    // First: sync normally
-    __setNextResponse(buildNtpPacket(Date.now() + 1000));
-    await sync.syncTime();
-    expect(sync.getHistory().deltas.length).toBe(1);
-
-    // Then: import should replace the history
-    sync.importDeltas([{ ntp: Date.now() + 200 }]);
-
-    const history = sync.getHistory();
-    expect(history.deltas.length).toBe(1);
-    expect(Math.abs(history.deltas[0].ntp - (Date.now() + 200))).toBeLessThan(50);
-  });
-
-  it('respects the history limit', () => {
-    const sync = makeSync({ history: 3 });
-    const now = Date.now();
-
+    // Simulate deltas from a future boot (monotonic higher than current)
     sync.importDeltas([
-      { ntp: now + 100, wallTime: now },
-      { ntp: now + 200, wallTime: now },
-      { ntp: now + 300, wallTime: now },
-      { ntp: now + 400, wallTime: now },
-      { ntp: now + 500, wallTime: now },
+      { ntp: Date.now() + 1000, monotonic: performance.now() + 999_999 },
     ]);
 
-    // Only the last 3 should be kept
-    const deltas = sync.getHistory().deltas;
-    expect(deltas).toHaveLength(3);
-    expect(Math.abs(deltas[0].ntp - (now + 300))).toBeLessThan(50);
-    expect(Math.abs(deltas[2].ntp - (now + 500))).toBeLessThan(50);
+    // Should be empty — all deltas discarded
+    expect(sync.getHistory().deltas).toHaveLength(0);
+    expect(sync.getTime()).toBeGreaterThanOrEqual(Date.now() - 10);
   });
 
-  it('updates lastNtpTime and lastSyncTime', () => {
+  it('keeps deltas from the current boot (monotonic <= current performance.now())', () => {
     const sync = makeSync({ startOnline: false });
-    const pastWallTime = Date.now() - 5_000;
-    const ntpValue = pastWallTime + 800;
+    const past = performance.now() - 5000; // 5s ago in the current boot
 
-    sync.importDeltas([{ ntp: ntpValue, wallTime: pastWallTime }]);
+    sync.importDeltas([{ ntp: Date.now() + 200, monotonic: past }]);
 
-    const history = sync.getHistory();
-    // lastNtpTime = ntpValue + (now - pastWallTime) ≈ Date.now() + 800
-    expect(Math.abs(history.lastNtpTime! - (Date.now() + 800))).toBeLessThan(50);
-    expect(history.lastSyncTime).toBe(Date.now());
+    const result = sync.getTime();
+    // Projected = ntp + (perfNow - past) = ntp + ~5000
+    expect(Math.abs(result - (Date.now() + 200 + 5000))).toBeLessThan(100);
+  });
+
+  it('mixed imports — only current-boot deltas are kept', () => {
+    const sync = makeSync({ history: 5, startOnline: false });
+    const current = performance.now() - 1000;
+    const future = performance.now() + 500_000;
+
+    sync.importDeltas([
+      { ntp: Date.now() + 100, monotonic: current },
+      { ntp: Date.now() + 200, monotonic: future },  // reboot — discarded
+      { ntp: Date.now() + 300, monotonic: current - 500 }, // older, same boot — kept
+    ]);
+
+    expect(sync.getHistory().deltas).toHaveLength(2);
+  });
+
+  it('clock manipulation does not affect projected time after import', () => {
+    const sync = makeSync({ startOnline: false });
+    const past = performance.now() - 3000;
+    const ntp = Date.now() + 800;
+
+    sync.importDeltas([{ ntp, monotonic: past }]);
+
+    const before = sync.getTime();
+
+    // Simulate user changing the clock by +2 hours
+    const realNow = Date.now;
+    jest.spyOn(Date, 'now').mockReturnValue(realNow() + 7_200_000);
+    const after = sync.getTime();
+    jest.restoreAllMocks();
+
+    // Time should stay anchored to monotonic clock, not Date.now()
+    expect(Math.abs(after - before)).toBeLessThan(50);
   });
 
   it('getTime advances correctly after import', () => {
     const sync = makeSync({ startOnline: false });
-    sync.importDeltas([{ ntp: Date.now() + 1000 }]);
+    const past = performance.now() - 2000;
+
+    sync.importDeltas([{ ntp: Date.now() + 1000, monotonic: past }]);
 
     const t0 = sync.getTime();
     jest.advanceTimersByTime(5_000);
@@ -748,40 +748,62 @@ describe('importDeltas', () => {
     expect(Math.abs((t1 - t0) - 5_000)).toBeLessThan(50);
   });
 
-  it('handles multiple imported samples with median', () => {
-    const sync = makeSync({ history: 5 });
+  it('respects the history limit', () => {
+    const sync = makeSync({ history: 3, startOnline: false });
+    const past = performance.now() - 1000;
     const now = Date.now();
 
-    // Simulate 3 samples from a previous session, all ~100ms ahead
     sync.importDeltas([
-      { ntp: now - 20_000 + 100, wallTime: now - 20_000 },
-      { ntp: now - 15_000 + 110, wallTime: now - 15_000 },
-      { ntp: now - 10_000 + 105, wallTime: now - 10_000 },
+      { ntp: now + 100, monotonic: past },
+      { ntp: now + 200, monotonic: past },
+      { ntp: now + 300, monotonic: past },
+      { ntp: now + 400, monotonic: past },
+      { ntp: now + 500, monotonic: past },
     ]);
 
-    // All project to ~now+105; median should be ~105
-    const result = sync.getTime();
-    expect(Math.abs(result - (Date.now() + 105))).toBeLessThan(50);
+    const deltas = sync.getHistory().deltas;
+    expect(deltas).toHaveLength(3);
+    // Last 3 kept (oldest-first preserved)
+    expect(deltas[0].ntp).toBe(now + 300);
+    expect(deltas[2].ntp).toBe(now + 500);
   });
 
-  it('does not affect getTime when no deltas are imported', () => {
+  it('empty import is a no-op', () => {
     const sync = makeSync({ startOnline: false });
     sync.importDeltas([]);
 
+    expect(sync.getHistory().deltas).toHaveLength(0);
     const before = Date.now();
     const result = sync.getTime();
     const after = Date.now();
-
     expect(result).toBeGreaterThanOrEqual(before);
     expect(result).toBeLessThanOrEqual(after);
   });
 
+  it('handles multiple samples with median', () => {
+    const sync = makeSync({ history: 5, startOnline: false });
+    const past = performance.now() - 1000;
+    const now = Date.now();
+
+    sync.importDeltas([
+      { ntp: now + 100, monotonic: past },
+      { ntp: now + 110, monotonic: past },
+      { ntp: now + 105, monotonic: past },
+    ]);
+
+    // All project to ~now+100+1000, now+110+1000, now+105+1000; median ~now+1105
+    const result = sync.getTime();
+    expect(Math.abs(result - (now + 1105))).toBeLessThan(50);
+  });
+
   it('works with getHistory snapshot after import', () => {
     const sync = makeSync({ startOnline: false });
+    const past = performance.now() - 2000;
     const now = Date.now();
+
     sync.importDeltas([
-      { ntp: now + 100, wallTime: now },
-      { ntp: now + 200, wallTime: now },
+      { ntp: now + 100, monotonic: past },
+      { ntp: now + 200, monotonic: past },
     ]);
 
     const history = sync.getHistory();
@@ -792,5 +814,37 @@ describe('importDeltas', () => {
     // Mutating the snapshot should not affect internal state
     history.deltas.push({ dt: 999, ntp: 999, monotonic: 999 });
     expect(sync.getHistory().deltas).toHaveLength(2);
+  });
+
+  it('replaces previous deltas from syncTime', async () => {
+    const sync = makeSync();
+
+    __setNextResponse(buildNtpPacket(Date.now() + 1000));
+    await sync.syncTime();
+    expect(sync.getHistory().deltas.length).toBe(1);
+
+    const past = performance.now() - 500;
+    sync.importDeltas([{ ntp: Date.now() + 200, monotonic: past }]);
+
+    const history = sync.getHistory();
+    expect(history.deltas.length).toBe(1);
+    expect(history.deltas[0].ntp).toBe(Date.now() + 200);
+  });
+
+  it('persists ntp + monotonic format for round-trip', () => {
+    const sync = makeSync({ startOnline: false });
+    const past = performance.now() - 1000;
+    const ntp = Date.now() + 300;
+
+    sync.importDeltas([{ ntp, monotonic: past }]);
+
+    // Simulate export (what the consumer would persist)
+    const exported = sync.getHistory().deltas.map(d => ({
+      ntp: d.ntp,
+      monotonic: d.monotonic,
+    }));
+
+    expect(exported[0].ntp).toBe(ntp);
+    expect(exported[0].monotonic).toBe(past);
   });
 });
