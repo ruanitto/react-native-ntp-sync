@@ -42,8 +42,8 @@ export type NtpHistory = {
 export type NtpHistoryChangeHandler = (delta: NtpHistory) => void
 
 export type DeltaImport = {
-  // NTP time (Unix ms) measured during the previous session
+  // NTP time (Unix ms) measured during a previous session
   ntp: number;
-  // Date.now() at the instant ntp was measured; defaults to Date.now() at import time
-  wallTime?: number;
+  // performance.now() at the instant ntp was measured (boot-based, same-boot safe)
+  monotonic: number;
 };

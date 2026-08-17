@@ -165,11 +165,11 @@ console.log(history.lastSyncTime);               // local timestamp of last succ
 
 ### `importDeltas(deltas: DeltaImport[]): void`
 
-Import previously persisted NTP deltas, re-anchoring each sample to the current session's monotonic clock. This is the key to maintaining reliable time **across app restarts while offline**.
+Import previously persisted NTP deltas, using raw monotonic anchors. This maintains reliable time **across app restarts while offline**.
 
-Because `performance.now()` resets every session, raw monotonic values from a previous session are stale. `importDeltas` handles the re-anchoring automatically: each sample is projected forward using the elapsed wall time since it was measured.
+Each persisted sample must include `ntp` (the NTP time at sync) and `monotonic` (the `performance.now()` value at sync). Because `performance.now()` is boot-based on Android (`SystemClock.uptimeMillis`) and iOS (`mach_absolute_time()`), raw values are valid across process restarts within the same boot — **no re-anchoring via `Date.now()` is needed**, which avoids reintroducing clock-manipulation vulnerabilities.
 
-Replaces the current delta history (oldest-first order is preserved; only the most recent `history` samples are kept).
+Deltas captured before a device reboot (where the stored `monotonic` exceeds the current `performance.now()`) are **automatically discarded**.
 
 ```typescript
 import NTPSync, { DeltaImport } from '@ruanitto/react-native-ntp-sync';
@@ -189,20 +189,20 @@ console.log(new Date(clock.getTime()).toISOString());
 
 // --- After each successful sync, persist the latest state ---
 clock.addListener(history => {
-  // Persist only what you need: ntp + wallTime for each sample
   const toStore: DeltaImport[] = history.deltas.map(d => ({
     ntp: d.ntp,
-    wallTime: d.ntp - d.dt, // dt = ntp − Date.now(), so Date.now() = ntp − dt
+    monotonic: d.monotonic,
   }));
   AsyncStorage.setItem('ntp-deltas', JSON.stringify(toStore));
 });
 ```
 
-#### Why re-anchoring is needed
+#### Why no re-anchoring is needed
 
-| Scenario | Old monotonic | `performance.now()` (new session) | Without re-anchor | With `importDeltas` |
+| Scenario | Old monotonic | `performance.now()` (new process, same boot) | Without import | With `importDeltas` |
 |---|---|---|---|---|
-| Sample at 50s into session | `50000` | `50` | `ntp + (50 − 50000)` = **−49950ms off** | `ntp + (now − wallTime)` = **correct** |
+| Sample at 50s into boot | `50000` | `55000` | `ntp + (55000 − 50000)` = **correct** | Same — raw anchor used directly |
+| After device reboot | `50000` | `1000` | `ntp + (1000 − 50000)` = **way off** | **Discarded** (`1000 < 50000`) |
 
 ---
 
@@ -389,7 +389,7 @@ npm test
 npm run test:coverage
 ```
 
-Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, offline reliability, delta import/re-anchoring, and all public API methods (70 tests).
+Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, offline reliability, secure monotonic-based delta import, and all public API methods (73 tests).
 
 ---
 
@@ -413,8 +413,8 @@ type NtpDelta = {
 };
 
 type DeltaImport = {
-  ntp: number;       // NTP time (Unix ms) measured in the previous session
-  wallTime?: number; // Date.now() when ntp was measured; defaults to Date.now()
+  ntp: number;       // NTP time (Unix ms) measured in a previous session
+  monotonic: number; // performance.now() at the sync instant (boot-based)
 };
 
 type Config = {

@@ -9,7 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 ## [1.4.0-beta.0] - 2026-08-10
 
 ### Added
-- `importDeltas(deltas)` — import previously persisted NTP samples, re-anchored to the current session's monotonic clock. Enables reliable offline time across app restarts.
+- `importDeltas(deltas)` — import previously persisted NTP samples using raw monotonic anchors. Because `performance.now()` is boot-based on Android and iOS, no re-anchoring via `Date.now()` is needed, avoiding clock-manipulation vulnerabilities. Deltas from a previous boot are automatically discarded.
 - `appStateSync` config option (default `true`) — re-syncs automatically when the app returns to the foreground, recovering from the suspended JS runtime in background.
 - `dispose()` — stops the auto-sync interval and unsubscribes from `AppState`, preventing leaks on teardown.
 
