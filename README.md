@@ -123,7 +123,7 @@ You generally don't need to call this manually — `autoSync` handles it. Useful
 
 ### `getDelta(): Promise<NtpDelta>`
 
-Fetches a single delta from the current NTP server without updating history. Returns `{ delta: 0 }` when offline.
+Fetches a single delta from the current NTP server and stores the result in history. Returns `{ delta: 0 }` when offline.
 
 ```typescript
 const { delta, fetchingServer } = await clock.getDelta();
@@ -151,7 +151,7 @@ console.log(history.lastSyncTime);               // local timestamp of last succ
 | Field | Type | Description |
 |---|---|---|
 | `currentServer` | `NtpServer` | Server used for the next sync |
-| `deltas` | `Delta[]` | Rolling list of `{ dt, ntp }` samples (max `history` entries) |
+| `deltas` | `Delta[]` | Rolling list of `{ dt, ntp, monotonic }` samples (max `history` entries) |
 | `errors` | `object[]` | Rolling list of sync errors (max `history` entries) |
 | `isInErrorState` | `boolean` | `true` if last sync failed |
 | `lastSyncTime` | `number \| null` | Local time of last successful sync (ms) |
@@ -160,6 +160,49 @@ console.log(history.lastSyncTime);               // local timestamp of last succ
 | `currentConsecutiveErrorCount` | `number` | Errors since last success |
 | `maxConsecutiveErrorCount` | `number` | Peak consecutive error streak |
 | `lifetimeErrorCount` | `number` | Total errors since creation |
+
+---
+
+### `importDeltas(deltas: DeltaImport[]): void`
+
+Import previously persisted NTP deltas, re-anchoring each sample to the current session's monotonic clock. This is the key to maintaining reliable time **across app restarts while offline**.
+
+Because `performance.now()` resets every session, raw monotonic values from a previous session are stale. `importDeltas` handles the re-anchoring automatically: each sample is projected forward using the elapsed wall time since it was measured.
+
+Replaces the current delta history (oldest-first order is preserved; only the most recent `history` samples are kept).
+
+```typescript
+import NTPSync, { DeltaImport } from '@ruanitto/react-native-ntp-sync';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const clock = new NTPSync({ syncOnCreation: false, startOnline: false });
+
+// --- On app startup, before first sync ---
+const stored = await AsyncStorage.getItem('ntp-deltas');
+if (stored) {
+  const deltas: DeltaImport[] = JSON.parse(stored);
+  clock.importDeltas(deltas);
+}
+
+// Now getTime() is accurate even while offline
+console.log(new Date(clock.getTime()).toISOString());
+
+// --- After each successful sync, persist the latest state ---
+clock.addListener(history => {
+  // Persist only what you need: ntp + wallTime for each sample
+  const toStore: DeltaImport[] = history.deltas.map(d => ({
+    ntp: d.ntp,
+    wallTime: d.ntp - d.dt, // dt = ntp − Date.now(), so Date.now() = ntp − dt
+  }));
+  AsyncStorage.setItem('ntp-deltas', JSON.stringify(toStore));
+});
+```
+
+#### Why re-anchoring is needed
+
+| Scenario | Old monotonic | `performance.now()` (new session) | Without re-anchor | With `importDeltas` |
+|---|---|---|---|---|
+| Sample at 50s into session | `50000` | `50` | `ntp + (50 − 50000)` = **−49950ms off** | `ntp + (now − wallTime)` = **correct** |
 
 ---
 
@@ -322,11 +365,13 @@ clock.addListener(history => {
 
 ### Manual sync on app foreground (React Native AppState)
 
+By default, `appStateSync: true` handles this automatically. If you disabled it, you can wire it up manually:
+
 ```typescript
 import { AppState } from 'react-native';
 import NTPSync from '@ruanitto/react-native-ntp-sync';
 
-const clock = new NTPSync();
+const clock = new NTPSync({ appStateSync: false });
 
 AppState.addEventListener('change', nextState => {
   if (nextState === 'active') {
@@ -344,7 +389,7 @@ npm test
 npm run test:coverage
 ```
 
-Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, and all public API methods.
+Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, offline reliability, delta import/re-anchoring, and all public API methods (70 tests).
 
 ---
 
@@ -365,6 +410,11 @@ type Delta = {
 type NtpDelta = {
   delta: number;
   fetchingServer?: NtpServer;
+};
+
+type DeltaImport = {
+  ntp: number;       // NTP time (Unix ms) measured in the previous session
+  wallTime?: number; // Date.now() when ntp was measured; defaults to Date.now()
 };
 
 type Config = {

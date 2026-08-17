@@ -4,6 +4,7 @@ import type { AppStateStatus } from 'react-native';
 import type {
   Config,
   Delta,
+  DeltaImport,
   NtpDelta,
   NtpHistoryChangeHandler,
   NtpHistory,
@@ -154,6 +155,42 @@ export default class NTPSync {
   };
 
   /**
+   * Import previously persisted NTP deltas, re-anchoring each sample to the
+   * current monotonic clock. Useful after app restart: persist deltas via
+   * storage (AsyncStorage, MMKV, …), then call this on next startup to
+   * maintain clock accuracy before the first network sync.
+   *
+   * Because `performance.now()` resets every session, old monotonic values
+   * cannot be used directly. Each sample is re-anchored using `wallTime`
+   * (the `Date.now()` when the NTP time was originally measured):
+   *
+   *   projectedNtp = ntp + (Date.now() − wallTime)
+   *   newMonotonic = performance.now()
+   *
+   * Replaces the current delta history (oldest-first order is preserved).
+   */
+  public importDeltas = (deltas: DeltaImport[]): void => {
+    const now = Date.now();
+    const perfNow = performance.now();
+
+    const reanchored = deltas.map(d => {
+      const wallTime = d.wallTime ?? now;
+      const ntp = d.ntp + (now - wallTime);
+      const dt = ntp - now;
+      return { dt, ntp, monotonic: perfNow };
+    });
+
+    // Keep only the most recent samples within the history limit
+    this.historyDetails.deltas = reanchored.slice(-this.limit);
+
+    if (this.historyDetails.deltas.length > 0) {
+      const last = this.historyDetails.deltas[this.historyDetails.deltas.length - 1];
+      this.historyDetails.lastNtpTime = last.ntp;
+      this.historyDetails.lastSyncTime = now;
+    }
+  };
+
+  /**
    * Returns corrected current time (ms since epoch).
    *
    * Each sample is projected onto the monotonic clock (`performance.now()`):
@@ -264,4 +301,4 @@ export default class NTPSync {
   }
 }
 
-export { Config, Delta, NtpDelta, NtpHistory, NtpServer, NtpClientError };
+export { Config, Delta, DeltaImport, NtpDelta, NtpHistory, NtpServer, NtpClientError };

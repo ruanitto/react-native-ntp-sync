@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 ## [1.4.0-beta.0] - 2026-08-10
 
 ### Added
+- `importDeltas(deltas)` — import previously persisted NTP samples, re-anchored to the current session's monotonic clock. Enables reliable offline time across app restarts.
 - `appStateSync` config option (default `true`) — re-syncs automatically when the app returns to the foreground, recovering from the suspended JS runtime in background.
 - `dispose()` — stops the auto-sync interval and unsubscribes from `AppState`, preventing leaks on teardown.
 
@@ -16,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 - `getTime()` is now anchored to the **monotonic clock** (`performance.now()`): each sample is projected as `ntp + (now − monotonic)` and the median is returned. The corrected time no longer reads `Date.now()`, so it stays reliable even if the user changes the device date/time after the first sync.
 - `getNetworkTime()` now captures T1/T4 with `performance.now()` (immune to manual clock changes during the request) and returns `{ time, monotonic }` instead of a `Date`.
 - `Delta` type gained a `monotonic` field.
+- `getDelta()` now updates history (previously documented as not doing so).
 
 ---
 
