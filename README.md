@@ -86,6 +86,10 @@ const clock = new NTPSync({
 
   // Re-sync when the app returns to the foreground (AppState)
   appStateSync: true,
+
+  // Maximum allowed clock skew in ms (absolute value). Deltas exceeding this
+  // are rejected to protect against rogue/buggy NTP servers. Default: 5000 (5s).
+  maxSkewMs: 5000,
 });
 ```
 
@@ -389,7 +393,7 @@ npm test
 npm run test:coverage
 ```
 
-Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, offline reliability, secure monotonic-based delta import, and all public API methods (73 tests).
+Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, offline reliability, secure monotonic-based delta import, maxSkewMs protection against rogue servers, and all public API methods (81 tests).
 
 ---
 
@@ -426,6 +430,7 @@ type Config = {
   syncOnCreation: boolean;
   syncTimeout: number;
   appStateSync: boolean;
+  maxSkewMs: number; // max allowed clock skew (ms) — rejects rogue server deltas
 };
 ```
 

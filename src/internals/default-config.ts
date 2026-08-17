@@ -15,6 +15,7 @@ const DEFAULT_CONFIG: Config = {
   autoSync: true,
   startOnline: true,
   appStateSync: true,
+  maxSkewMs: 5000,
 };
 
 export default DEFAULT_CONFIG;

@@ -90,6 +90,14 @@ export default class NTPSync {
     const tempLocalTime = Date.now();
     const dt = tempServerTime - tempLocalTime;
 
+    // Reject deltas that exceed the configured maximum skew to protect
+    // against rogue or buggy NTP servers (issue #6).
+    if (Math.abs(dt) > this.config.maxSkewMs) {
+      throw new Error(
+        `Delta ${dt}ms exceeds maximum allowed skew of ${this.config.maxSkewMs}ms`
+      );
+    }
+
     // Circular buffer: overwrite oldest entry when at capacity
     if (this.historyDetails.deltas.length >= this.limit) {
       this.historyDetails.deltas.shift();
@@ -186,7 +194,7 @@ export default class NTPSync {
         ntp: d.ntp,
         monotonic: d.monotonic,
       };
-    });
+    }).filter(d => Math.abs(d.dt) <= this.config.maxSkewMs);
 
     this.historyDetails.deltas = reanchored.slice(-this.limit);
 
