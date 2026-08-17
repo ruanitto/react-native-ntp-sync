@@ -7,6 +7,9 @@ export type Config = {
   syncOnCreation: boolean;
   syncTimeout: number;
   appStateSync: boolean;
+  // Maximum allowed clock skew in ms (absolute value). Deltas exceeding this
+  // are rejected to protect against rogue/buggy NTP servers. Default: 5000 (5s).
+  maxSkewMs: number;
 };
 
 export type NtpServer = {

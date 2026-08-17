@@ -6,12 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
-## [1.4.0-beta.0] - 2026-08-10
+## [1.4.1-beta.1] - 2026-08-17
+
+### Added
+- `maxSkewMs` config option (default `5000`) — maximum allowed clock skew in ms. Deltas exceeding this threshold are rejected to protect against rogue or buggy NTP servers that return implausible offsets (#6).
+
+### Security
+- Deltas from NTP servers with clock skew exceeding `maxSkewMs` are now rejected, preventing a single rogue response from poisoning the median and skewing the corrected time.
+
+---
+
+## [1.4.0] - 2026-08-10
 
 ### Added
 - `importDeltas(deltas)` — import previously persisted NTP samples using raw monotonic anchors. Because `performance.now()` is boot-based on Android and iOS, no re-anchoring via `Date.now()` is needed, avoiding clock-manipulation vulnerabilities. Deltas from a previous boot are automatically discarded.
 - `appStateSync` config option (default `true`) — re-syncs automatically when the app returns to the foreground, recovering from the suspended JS runtime in background.
 - `dispose()` — stops the auto-sync interval and unsubscribes from `AppState`, preventing leaks on teardown.
+- `maxSkewMs` config option (default `5000`) — maximum allowed clock skew in ms. Deltas exceeding this threshold are rejected to protect against rogue or buggy NTP servers that return implausible offsets (#6).
 
 ### Changed
 - `getTime()` is now anchored to the **monotonic clock** (`performance.now()`): each sample is projected as `ntp + (now − monotonic)` and the median is returned. The corrected time no longer reads `Date.now()`, so it stays reliable even if the user changes the device date/time after the first sync.

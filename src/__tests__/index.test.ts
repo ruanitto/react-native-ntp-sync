@@ -139,7 +139,7 @@ describe('getTime', () => {
   });
 
   it('does not jump when the device clock is manually changed', async () => {
-    const serverTime = Date.now() + 5000;
+    const serverTime = Date.now() + 3000;
     __setNextResponse(buildNtpPacket(serverTime));
     const sync = makeSync();
 
@@ -549,6 +549,105 @@ describe('server rotation', () => {
   });
 });
 
+describe('maxSkewMs', () => {
+  it('accepts deltas within the default 5s limit', async () => {
+    const serverTime = Date.now() + 4000; // 4s ahead
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync();
+
+    await sync.syncTime();
+    expect(sync.getHistory().deltas).toHaveLength(1);
+    expect(sync.getHistory().deltas[0].dt).toBeGreaterThan(0);
+  });
+
+  it('rejects deltas exceeding maxSkewMs and rotates server', async () => {
+    const serverTime = Date.now() + 60_000; // 60s ahead
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync({ servers: [
+      { server: 'bad.ntp.org', port: 123 },
+      { server: 'good.ntp.org', port: 123 },
+    ]});
+
+    try { await sync.syncTime(); } catch { /* expected */ }
+
+    expect(sync.getHistory().deltas).toHaveLength(0);
+    expect(sync.getHistory().currentServer.server).toBe('good.ntp.org');
+  });
+
+  it('rejects large negative deltas (rogue server behind)', async () => {
+    const serverTime = Date.now() - 120_000; // 2 minutes behind
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync();
+
+    try { await sync.syncTime(); } catch { /* expected */ }
+
+    expect(sync.getHistory().deltas).toHaveLength(0);
+  });
+
+  it('respects custom maxSkewMs config', async () => {
+    const serverTime = Date.now() + 800; // 800ms ahead
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync({ maxSkewMs: 500 });
+
+    try { await sync.syncTime(); } catch { /* expected */ }
+
+    expect(sync.getHistory().deltas).toHaveLength(0);
+  });
+
+  it('accepts delta exactly at the boundary', async () => {
+    const serverTime = Date.now() + 4999; // safely under the 5000 limit
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync();
+
+    await sync.syncTime();
+    expect(sync.getHistory().deltas).toHaveLength(1);
+  });
+
+  it('rejected delta still triggers server rotation and error recording', async () => {
+    const serverTime = Date.now() + 300_000; // way over
+    __setNextResponse(buildNtpPacket(serverTime));
+    const sync = makeSync({ servers: [
+      { server: 'bad.ntp.org', port: 123 },
+      { server: 'good.ntp.org', port: 123 },
+    ]});
+
+    try { await sync.syncTime(); } catch { /* expected */ }
+
+    const history = sync.getHistory();
+    expect(history.errors.length).toBeGreaterThan(0);
+    expect(history.isInErrorState).toBe(true);
+    expect(history.currentConsecutiveErrorCount).toBe(1);
+    expect(history.lifetimeErrorCount).toBe(1);
+  });
+
+  it('importDeltas filters samples exceeding maxSkewMs', () => {
+    const sync = makeSync({ startOnline: false, maxSkewMs: 500 });
+    const past = performance.now(); // same as current — no projection offset
+
+    // dt = (Date.now() + 100) - Date.now() = 100, within limit
+    // dt = (Date.now() + 2000) - Date.now() = 2000, over limit
+    sync.importDeltas([
+      { ntp: Date.now() + 100, monotonic: past },
+      { ntp: Date.now() + 2000, monotonic: past },
+    ]);
+
+    expect(sync.getHistory().deltas).toHaveLength(1);
+  });
+
+  it('importDeltas keeps all samples when within limit', () => {
+    const sync = makeSync({ startOnline: false, maxSkewMs: 5000 });
+    const past = performance.now() - 1000;
+
+    sync.importDeltas([
+      { ntp: Date.now() + 100, monotonic: past },
+      { ntp: Date.now() + 200, monotonic: past },
+      { ntp: Date.now() + 300, monotonic: past },
+    ]);
+
+    expect(sync.getHistory().deltas).toHaveLength(3);
+  });
+});
+
 describe('offline reliability', () => {
   it('getTime returns NTP-corrected time after going offline', async () => {
     const serverTime = Date.now() + 1000;
@@ -693,13 +792,13 @@ describe('importDeltas (secure monotonic-based)', () => {
 
   it('keeps deltas from the current boot (monotonic <= current performance.now())', () => {
     const sync = makeSync({ startOnline: false });
-    const past = performance.now() - 5000; // 5s ago in the current boot
+    const past = performance.now() - 2000; // 2s ago in the current boot
 
     sync.importDeltas([{ ntp: Date.now() + 200, monotonic: past }]);
 
     const result = sync.getTime();
-    // Projected = ntp + (perfNow - past) = ntp + ~5000
-    expect(Math.abs(result - (Date.now() + 200 + 5000))).toBeLessThan(100);
+    // Projected = ntp + (perfNow - past) = ntp + ~2000
+    expect(Math.abs(result - (Date.now() + 200 + 2000))).toBeLessThan(100);
   });
 
   it('mixed imports — only current-boot deltas are kept', () => {
