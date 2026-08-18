@@ -9,12 +9,18 @@ React Native NTP client that fetches accurate time from the internet and keeps y
 1. Sends an NTP request to a configurable list of servers.
 2. Compensates for network round-trip delay using the standard RFC 5905 offset formula: `((T2−T1) + (T3−T4)) / 2`.
 3. Validates the server response (stratum, synchronization status, timestamp sanity).
-4. Anchors every sample to the **monotonic clock** (`performance.now()`), so the corrected time is computed as `ntp + (now − monotonic)`.
+4. Anchors every sample to a **sleep-aware monotonic clock** — `SystemClock.elapsedRealtime()` on Android and `CACurrentMediaTime()` on iOS — so the corrected time is computed as `ntp + (now − monotonic)`.
 5. Stores a rolling history of deltas and uses the **median** to compute corrected time — outliers from unstable networks are automatically rejected.
 6. Rotates to the next server on failure and retries automatically.
 7. Re-syncs automatically when the app returns to the foreground (`AppState`).
 
-**Why a monotonic clock?** The device wall clock (`Date.now()`) can be changed by the user or by automatic time corrections. Because `getTime()` is anchored to `performance.now()` — which cannot be changed manually — the returned time stays reliable even if the user changes the device date/time *after* the first successful sync.
+**Why a monotonic clock?** The device wall clock (`Date.now()`) can be changed by the user or by automatic time corrections. Because `getTime()` is anchored to the monotonic clock — which cannot be changed manually — the returned time stays reliable even if the user changes the device date/time *after* the first successful sync.
+
+**Why a native module?** Before 2.0.0 the package used `performance.now()` as its monotonic clock. On Android's Hermes runtime that is backed by `SystemClock.uptimeMillis()`, which **does not count time spent in deep sleep** — a phone synced at 21:00, closed overnight, and reopened offline at 08:10 would project the time as ~01:27 (≈7h behind). On iOS, `performance.now()` (`mach_absolute_time`) already includes sleep, so iOS was never affected.
+
+Since 2.0.0 the package ships a small native module (`RNNtpMonotonicClock`) that reads `SystemClock.elapsedRealtime()` on Android and `CACurrentMediaTime()` on iOS — both include deep sleep, are immune to wall-clock manipulation, and reset on reboot (preserving the existing boot-filter semantics). **Consumers must rebuild their native code** (and re-run `pod install` on iOS) for the module to be linked; until then, and on platforms without the module (e.g. web), the package transparently falls back to `performance.now()`.
+
+> **Breaking change (2.0.0):** persisted delta format. Deltas stored by versions < 2.0.0 used `performance.now()` (uptime-based) and have no `clock` field. Because uptime ≤ elapsed-realtime always, they would pass the boot filter and silently project the entire sleep time since boot. `importDeltas` now discards any delta whose `clock` field does not match the current clock (deltas without the field are treated as `'uptime'` and discarded). New deltas carry `clock: 'elapsed'`.
 
 ---
 
@@ -29,6 +35,8 @@ On iOS, run pod install after installing:
 ```sh
 cd ios && pod install
 ```
+
+**Since 2.0.0 the package contains native code.** Rebuild the app after upgrading so the native `RNNtpMonotonicClock` module is linked (Android: `npx react-native run-android`; iOS: `pod install` + rebuild). Autolinking (React Native ≥ 0.60) picks up `android/` and the podspec automatically.
 
 **React Native >= 0.60 required.** See [react-native-udp compatibility](https://www.npmjs.com/package/react-native-udp#react-native-compatibility) for details.
 
@@ -106,7 +114,7 @@ const timestamp = clock.getTime();
 console.log(new Date(timestamp).toISOString()); // e.g. "2026-06-01T12:00:00.000Z"
 ```
 
-The value is the **median** of each sample projected onto the monotonic clock (`ntp + (performance.now() − monotonic)`), which rejects outliers and stays correct even if the user changes the device clock. If no sync has occurred yet, falls back to `Date.now()`.
+The value is the **median** of each sample projected onto the monotonic clock (`ntp + (monotonicNow() − monotonic)`), which rejects outliers and stays correct even if the user changes the device clock or the device sleeps (the native clock includes deep sleep). If no sync has occurred yet, falls back to `Date.now()`.
 
 ---
 
@@ -155,7 +163,7 @@ console.log(history.lastSyncTime);               // local timestamp of last succ
 | Field | Type | Description |
 |---|---|---|
 | `currentServer` | `NtpServer` | Server used for the next sync |
-| `deltas` | `Delta[]` | Rolling list of `{ dt, ntp, monotonic }` samples (max `history` entries) |
+| `deltas` | `Delta[]` | Rolling list of `{ dt, ntp, monotonic, clock }` samples (max `history` entries) |
 | `errors` | `object[]` | Rolling list of sync errors (max `history` entries) |
 | `isInErrorState` | `boolean` | `true` if last sync failed |
 | `lastSyncTime` | `number \| null` | Local time of last successful sync (ms) |
@@ -171,9 +179,11 @@ console.log(history.lastSyncTime);               // local timestamp of last succ
 
 Import previously persisted NTP deltas, using raw monotonic anchors. This maintains reliable time **across app restarts while offline**.
 
-Each persisted sample must include `ntp` (the NTP time at sync) and `monotonic` (the `performance.now()` value at sync). Because `performance.now()` is boot-based on Android (`SystemClock.uptimeMillis`) and iOS (`mach_absolute_time()`), raw values are valid across process restarts within the same boot — **no re-anchoring via `Date.now()` is needed**, which avoids reintroducing clock-manipulation vulnerabilities.
+Each persisted sample must include `ntp` (the NTP time at sync), `monotonic` (the monotonic clock value at sync) and `clock` (the clock used to measure it — `'elapsed'` in 2.0.0+). The monotonic clock is boot-based on Android (`SystemClock.elapsedRealtime`) and iOS (`CACurrentMediaTime()`), so raw values are valid across process restarts within the same boot — **no re-anchoring via `Date.now()` is needed**, which avoids reintroducing clock-manipulation vulnerabilities.
 
-Deltas captured before a device reboot (where the stored `monotonic` exceeds the current `performance.now()`) are **automatically discarded**.
+Deltas captured before a device reboot (where the stored `monotonic` exceeds the current monotonic clock) are **automatically discarded**.
+
+**Legacy deltas (pre-2.0.0) are discarded.** Deltas persisted by older versions used `performance.now()` (`SystemClock.uptimeMillis`, which excludes deep sleep) and have no `clock` field. They are treated as `'uptime'` and rejected, because projecting them on the sleep-aware clock would silently add the total sleep time since boot. If you have stored deltas, drop them or let `importDeltas` discard them — the first successful sync after upgrading produces compatible deltas.
 
 ```typescript
 import NTPSync, { DeltaImport } from '@ruanitto/react-native-ntp-sync';
@@ -196,6 +206,7 @@ clock.addListener(history => {
   const toStore: DeltaImport[] = history.deltas.map(d => ({
     ntp: d.ntp,
     monotonic: d.monotonic,
+    clock: d.clock,
   }));
   AsyncStorage.setItem('ntp-deltas', JSON.stringify(toStore));
 });
@@ -203,7 +214,7 @@ clock.addListener(history => {
 
 #### Why no re-anchoring is needed
 
-| Scenario | Old monotonic | `performance.now()` (new process, same boot) | Without import | With `importDeltas` |
+| Scenario | Old monotonic | monotonic clock (new process, same boot) | Without import | With `importDeltas` |
 |---|---|---|---|---|
 | Sample at 50s into boot | `50000` | `55000` | `ntp + (55000 − 50000)` = **correct** | Same — raw anchor used directly |
 | After device reboot | `50000` | `1000` | `ntp + (1000 − 50000)` = **way off** | **Discarded** (`1000 < 50000`) |
@@ -393,7 +404,7 @@ npm test
 npm run test:coverage
 ```
 
-Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, offline reliability, secure monotonic-based delta import, maxSkewMs protection against rogue servers, and all public API methods (81 tests).
+Tests use Jest with a full mock of `react-native-udp`, covering NTP packet parsing, round-trip compensation, server validation, server rotation, monotonic anchor immunity to device clock changes, deep-sleep handling (sleep-aware monotonic clock), legacy-delta rejection on import, offline reliability, secure monotonic-based delta import, maxSkewMs protection against rogue servers, and all public API methods (86 tests).
 
 ---
 
@@ -405,10 +416,15 @@ type NtpServer = {
   port: number;
 };
 
+type MonotonicClock = 'uptime' | 'elapsed';
+// 'uptime'  = SystemClock.uptimeMillis / performance.now() — pauses during deep sleep (pre-2.0.0)
+// 'elapsed' = SystemClock.elapsedRealtime / CACurrentMediaTime — includes deep sleep (2.0.0+)
+
 type Delta = {
   dt: number;         // delta between NTP and local time (ms)
   ntp: number;        // NTP server time (Unix ms)
-  monotonic: number;  // performance.now() at the sync instant (ms)
+  monotonic: number;  // monotonic clock at the sync instant (ms)
+  clock: MonotonicClock; // 'elapsed' in 2.0.0+
 };
 
 type NtpDelta = {
@@ -417,8 +433,9 @@ type NtpDelta = {
 };
 
 type DeltaImport = {
-  ntp: number;       // NTP time (Unix ms) measured in a previous session
-  monotonic: number; // performance.now() at the sync instant (boot-based)
+  ntp: number;        // NTP time (Unix ms) measured in a previous session
+  monotonic: number;  // monotonic clock at the sync instant (boot-based)
+  clock?: MonotonicClock; // optional — deltas without it ('uptime') are discarded on import
 };
 
 type Config = {
