@@ -1,11 +1,14 @@
 {
   "name": "@ruanitto/react-native-ntp-sync",
-  "version": "1.4.1-beta.1",
+  "version": "2.0.0-beta.0",
   "description": "Sync time using NTP servers",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist/**/*"
+    "dist/**/*",
+    "android/**/*",
+    "ios/**/*",
+    "*.podspec"
   ],
   "scripts": {
     "build": "tsc",

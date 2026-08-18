@@ -5,6 +5,7 @@ import type {
   Config,
   Delta,
   DeltaImport,
+  MonotonicClock,
   NtpDelta,
   NtpHistoryChangeHandler,
   NtpHistory,
@@ -14,6 +15,7 @@ import type {
 import { NtpClientError } from './internals/error';
 import { getNetworkTime } from './internals/client';
 import DEFAULT_CONFIG from './internals/default-config';
+import { MONOTONIC_CLOCK, monotonicNow } from './internals/monotonic';
 
 export default class NTPSync {
   private ntpServers: NtpServer[];
@@ -76,8 +78,10 @@ export default class NTPSync {
 
   /**
    * Re-sync when the app returns to the foreground. While backgrounded the JS
-   * runtime is suspended, so the monotonic clock stops advancing; a fresh sync
-   * re-anchors the corrected time.
+   * runtime is suspended, so the corrected time cannot advance; a fresh sync
+   * re-anchors it. Note the monotonic clock (elapsedRealtime /
+   * CACurrentMediaTime) keeps advancing through deep sleep, so deltas captured
+   * before backgrounding stay accurate when the app wakes up.
    */
   private handleAppStateChange = (nextState: AppStateStatus) => {
     if (nextState === 'active' && this.isOnline) {
@@ -107,6 +111,7 @@ export default class NTPSync {
       dt,
       ntp: tempServerTime,
       monotonic,
+      clock: MONOTONIC_CLOCK,
     });
 
     this.historyDetails.lastSyncTime = tempLocalTime;
@@ -165,22 +170,32 @@ export default class NTPSync {
   /**
    * Import previously persisted NTP deltas, using raw monotonic anchors.
    *
-   * Each delta must include `ntp` (the NTP time at sync) and `monotonic`
-   * (the `performance.now()` value at sync). Because `performance.now()` is
-   * boot-based on Android (`SystemClock.uptimeMillis`) and iOS
-   * (`mach_absolute_time()`), raw values are valid across process restarts
-   * within the same boot cycle — no re-anchoring is needed.
+   * Each delta must include `ntp` (the NTP time at sync), `monotonic` (the
+   * monotonic clock value at sync) and `clock` (the clock used to measure it).
+   * The monotonic clock is `SystemClock.elapsedRealtime()` on Android and
+   * `CACurrentMediaTime()` on iOS — both boot-based and include deep sleep —
+   * so raw values are valid across process restarts within the same boot
+   * cycle: no re-anchoring is needed.
+   *
+   * Deltas persisted by pre-2.0.0 versions used `performance.now()`
+   * (`SystemClock.uptimeMillis`, which excludes deep sleep). Those deltas lack
+   * the `clock` field and are treated as `'uptime'`; they are discarded
+   * because projecting them on the sleep-aware clock would silently add the
+   * total sleep time since boot.
    *
    * Deltas captured before a device reboot (where the stored `monotonic`
-   * exceeds the current `performance.now()`) are automatically discarded.
+   * exceeds the current monotonic clock) are automatically discarded.
    *
    * Replaces the current delta history (oldest-first order preserved).
    */
   public importDeltas = (deltas: DeltaImport[]): void => {
-    const perfNow = performance.now();
+    const perfNow = monotonicNow();
 
-    // Only keep deltas from the current boot cycle
-    const valid = deltas.filter(d => perfNow >= d.monotonic);
+    // Only keep deltas from the current boot cycle, measured on the same
+    // (sleep-aware) monotonic clock as the one in use now
+    const valid = deltas.filter(
+      d => d.clock === MONOTONIC_CLOCK && perfNow >= d.monotonic
+    );
 
     if (valid.length === 0) {
       return;
@@ -193,6 +208,7 @@ export default class NTPSync {
         dt,
         ntp: d.ntp,
         monotonic: d.monotonic,
+        clock: MONOTONIC_CLOCK,
       };
     }).filter(d => Math.abs(d.dt) <= this.config.maxSkewMs);
 
@@ -208,10 +224,12 @@ export default class NTPSync {
   /**
    * Returns corrected current time (ms since epoch).
    *
-   * Each sample is projected onto the monotonic clock (`performance.now()`):
-   * `ntp + (now - monotonic)`. The median of those projections rejects
-   * outliers from unstable networks AND is immune to manual device clock
-   * changes, because it never reads `Date.now()` after the initial sync.
+   * Each sample is projected onto the monotonic clock (`monotonicNow()` —
+   * sleep-aware `elapsedRealtime`/`CACurrentMediaTime` when the native module
+   * is available, `performance.now()` otherwise): `ntp + (now - monotonic)`.
+   * The median of those projections rejects outliers from unstable networks
+   * AND is immune to manual device clock changes, because it never reads
+   * `Date.now()` after the initial sync.
    */
   public getTime = (): number => {
     const { deltas } = this.historyDetails;
@@ -220,7 +238,7 @@ export default class NTPSync {
       return Date.now();
     }
 
-    const perfNow = performance.now();
+    const perfNow = monotonicNow();
     const projected = deltas.map(d => d.ntp + (perfNow - d.monotonic));
 
     const sorted = [...projected].sort((a, b) => a - b);
@@ -316,4 +334,4 @@ export default class NTPSync {
   }
 }
 
-export { Config, Delta, DeltaImport, NtpDelta, NtpHistory, NtpServer, NtpClientError };
+export { Config, Delta, DeltaImport, MonotonicClock, NtpDelta, NtpHistory, NtpServer, NtpClientError };

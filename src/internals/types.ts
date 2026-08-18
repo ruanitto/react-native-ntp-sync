@@ -17,11 +17,17 @@ export type NtpServer = {
   port: number;
 };
 
+// Clock used to measure `monotonic`. 'uptime' = SystemClock.uptimeMillis /
+// performance.now() (pauses during deep sleep); 'elapsed' =
+// SystemClock.elapsedRealtime / CACurrentMediaTime (includes deep sleep).
+export type MonotonicClock = 'uptime' | 'elapsed';
+
 export type Delta = {
   dt: number;
   ntp: number;
-  // performance.now() at the sync instant (ms) — monotonic anchor
+  // monotonic clock at the sync instant (ms) — projection anchor
   monotonic: number;
+  clock: MonotonicClock;
 };
 
 export type NtpDelta = {
@@ -47,6 +53,10 @@ export type NtpHistoryChangeHandler = (delta: NtpHistory) => void
 export type DeltaImport = {
   // NTP time (Unix ms) measured during a previous session
   ntp: number;
-  // performance.now() at the instant ntp was measured (boot-based, same-boot safe)
+  // monotonic clock at the instant ntp was measured (boot-based, same-boot safe)
   monotonic: number;
+  // Clock used to measure `monotonic`. Optional for compatibility with the
+  // pre-2.0.0 format; deltas without this field ('uptime') are discarded on
+  // import because the projection clock now includes deep sleep ('elapsed').
+  clock?: MonotonicClock;
 };
