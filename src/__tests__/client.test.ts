@@ -6,6 +6,17 @@ import {
   __setNextTimeout,
 } from '../__mocks__/react-native-udp';
 
+// react-native is not installed in this repo — mock only what client.ts
+// transitively uses (monotonic.ts reads NativeModules)
+jest.mock(
+  'react-native',
+  () => ({
+    // No native module in tests → monotonicNow() falls back to performance.now()
+    NativeModules: {},
+  }),
+  { virtual: true },
+);
+
 describe('getNetworkTime', () => {
   const SERVER = 'time.google.com';
   const PORT = 123;

@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [2.0.0] - 2026-08-18
+
+### Added
+- Native module `RNNtpMonotonicClock` — a sleep-aware monotonic clock backed by `SystemClock.elapsedRealtime()` (Android) and `CACurrentMediaTime()` (iOS). Autolinked via `android/` and the new `RNNtpSync.podspec`. Consumers must rebuild their native code (and re-run `pod install` on iOS).
+- Injectable monotonic clock source (`src/internals/monotonic.ts`) with a `performance.now()` fallback for platforms without the native module (e.g. web).
+- `clock: 'uptime' | 'elapsed'` field on `Delta` (required) and `DeltaImport` (optional).
+
+### Changed
+- **Breaking:** `getTime()`, `getNetworkTime()` (T1/T4) and `importDeltas()` now use the sleep-aware monotonic clock instead of `performance.now()`. On Android's Hermes, `performance.now()` is backed by `SystemClock.uptimeMillis()`, which does not advance during deep sleep — a device synced at 21:00 and reopened offline at 08:10 displayed ~01:27 (≈7h behind). iOS was never affected.
+- **Breaking:** `importDeltas()` discards pre-2.0.0 deltas (no `clock` field, treated as `'uptime'`). Because `uptimeMillis <= elapsedRealtime` always, old deltas would pass the boot filter and silently project the total sleep time since boot.
+
+### Fixed
+- Corrected time no longer falls behind after deep sleep on Android while offline.
+
+---
+
 ## [1.4.1-beta.1] - 2026-08-17
 
 ### Added

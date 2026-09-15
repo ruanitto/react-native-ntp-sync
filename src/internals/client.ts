@@ -1,5 +1,6 @@
 import { Buffer } from "buffer";
 import dgram from "react-native-udp";
+import { monotonicNow } from "./monotonic";
 
 // NTP epoch offset: seconds between 1900-01-01 and 1970-01-01
 const NTP_EPOCH_OFFSET_MS = 2208988800000;
@@ -7,7 +8,7 @@ const NTP_EPOCH_OFFSET_MS = 2208988800000;
 export type NtpResult = {
   // Corrected NTP time (Unix ms) anchored to the monotonic clock
   time: number;
-  // performance.now() at the correction instant (ms)
+  // monotonic clock at the correction instant (ms)
   monotonic: number;
 };
 
@@ -80,7 +81,7 @@ export const getNetworkTime = async (
 
     client.once("message", msg => {
       // T4: client receive time on the monotonic clock
-      const t4 = performance.now();
+      const t4 = monotonicNow();
       clearTimeout(timeout);
       client.close();
 
@@ -120,7 +121,7 @@ export const getNetworkTime = async (
     });
 
     client.once("listening", () => {
-      t1 = performance.now(); // record T1 as close to send as possible
+      t1 = monotonicNow(); // record T1 as close to send as possible
       client.send(ntpData, 0, ntpData.length, port, server, err => {
         if (err) {
           if (errorFired) return;
