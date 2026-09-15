@@ -14,10 +14,18 @@ jest.mock(
     AppState: {
       addEventListener: jest.fn(() => ({ remove: jest.fn() })),
     },
-    // No native module in tests → monotonicNow() falls back to performance.now()
-    NativeModules: {},
+    // Simulate a rebuilt app with the native module linked: it reports the
+    // sleep-aware clock ('elapsed'). In Node its `now` is backed by
+    // performance.now(); the deep-sleep tests inject a fake via
+    // setMonotonicClockSource. MONOTONIC_CLOCK therefore reads 'elapsed' here.
+    NativeModules: {
+      RNNtpMonotonicClock: {
+        clock: 'elapsed',
+        now: () => performance.now(),
+      },
+    },
   }),
-  { virtual: true },
+  { virtual: true }
 );
 
 import { AppState } from 'react-native';
@@ -25,7 +33,10 @@ const mockAppState = AppState as unknown as {
   addEventListener: jest.Mock;
 };
 
-import { setMonotonicClockSource, resetMonotonicClockSource } from '../internals/monotonic';
+import {
+  setMonotonicClockSource,
+  resetMonotonicClockSource,
+} from '../internals/monotonic';
 
 // Prevent auto-sync intervals from leaking between tests
 beforeEach(() => {
@@ -57,8 +68,16 @@ async function flushMicrotasks(rounds = 5) {
 
 describe('NTPSync constructor', () => {
   it('does not mutate DEFAULT_CONFIG across instances', () => {
-    const a = new NTPSync({ autoSync: false, syncOnCreation: false, history: 5 });
-    const b = new NTPSync({ autoSync: false, syncOnCreation: false, history: 20 });
+    const a = new NTPSync({
+      autoSync: false,
+      syncOnCreation: false,
+      history: 5,
+    });
+    const b = new NTPSync({
+      autoSync: false,
+      syncOnCreation: false,
+      history: 20,
+    });
 
     // Each instance should have its own config
     expect((a as any).limit).toBe(5);
@@ -117,12 +136,16 @@ describe('getTime', () => {
 
     // Inject 5 deltas manually: 4 consistent + 1 extreme outlier.
     // ntp and monotonic are anchored to "now" so the projection is exact.
-    const deltas = (sync as any).historyDetails.deltas as Array<{ dt: number; ntp: number; monotonic: number }>;
+    const deltas = (sync as any).historyDetails.deltas as Array<{
+      dt: number;
+      ntp: number;
+      monotonic: number;
+    }>;
     const now = Date.now();
     const perfNow = performance.now();
     deltas.push({ dt: 100, ntp: now + 100, monotonic: perfNow });
     deltas.push({ dt: 110, ntp: now + 110, monotonic: perfNow });
-    deltas.push({ dt: 90,  ntp: now + 90,  monotonic: perfNow });
+    deltas.push({ dt: 90, ntp: now + 90, monotonic: perfNow });
     deltas.push({ dt: 105, ntp: now + 105, monotonic: perfNow });
     deltas.push({ dt: 50000, ntp: now + 50000, monotonic: perfNow }); // outlier
 
@@ -133,7 +156,11 @@ describe('getTime', () => {
 
   it('median works with even number of deltas', async () => {
     const sync = makeSync({ history: 4 });
-    const deltas = (sync as any).historyDetails.deltas as Array<{ dt: number; ntp: number; monotonic: number }>;
+    const deltas = (sync as any).historyDetails.deltas as Array<{
+      dt: number;
+      ntp: number;
+      monotonic: number;
+    }>;
     const now = Date.now();
     const perfNow = performance.now();
     deltas.push({ dt: 100, ntp: now + 100, monotonic: perfNow });
@@ -382,7 +409,7 @@ describe('AppState / background handling', () => {
     makeSync();
     expect(mockAppState.addEventListener).toHaveBeenCalledWith(
       'change',
-      expect.any(Function),
+      expect.any(Function)
     );
   });
 
@@ -447,10 +474,12 @@ describe('listeners', () => {
     await sync.syncTime();
 
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
-      deltas: expect.any(Array),
-      isInErrorState: false,
-    }));
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deltas: expect.any(Array),
+        isInErrorState: false,
+      })
+    );
   });
 
   it('listener not called on sync failure', async () => {
@@ -510,7 +539,10 @@ describe('getHistory', () => {
 
     expect(history).toMatchObject({
       currentConsecutiveErrorCount: expect.any(Number),
-      currentServer: expect.objectContaining({ server: expect.any(String), port: expect.any(Number) }),
+      currentServer: expect.objectContaining({
+        server: expect.any(String),
+        port: expect.any(Number),
+      }),
       deltas: expect.any(Array),
       errors: expect.any(Array),
       isInErrorState: expect.any(Boolean),
@@ -533,7 +565,11 @@ describe('server rotation', () => {
     for (let i = 0; i < servers.length; i++) {
       __setNextError(new Error('fail'));
       visited.add(sync.getHistory().currentServer.server);
-      try { await sync.getDelta(); } catch { /* expected */ }
+      try {
+        await sync.getDelta();
+      } catch {
+        /* expected */
+      }
     }
 
     expect(visited.size).toBe(servers.length);
@@ -549,7 +585,11 @@ describe('server rotation', () => {
     // Fail twice to wrap around
     for (let i = 0; i < 2; i++) {
       __setNextError(new Error('fail'));
-      try { await sync.getDelta(); } catch { /* expected */ }
+      try {
+        await sync.getDelta();
+      } catch {
+        /* expected */
+      }
     }
 
     // Should be back to first server
@@ -571,12 +611,18 @@ describe('maxSkewMs', () => {
   it('rejects deltas exceeding maxSkewMs and rotates server', async () => {
     const serverTime = Date.now() + 60_000; // 60s ahead
     __setNextResponse(buildNtpPacket(serverTime));
-    const sync = makeSync({ servers: [
-      { server: 'bad.ntp.org', port: 123 },
-      { server: 'good.ntp.org', port: 123 },
-    ]});
+    const sync = makeSync({
+      servers: [
+        { server: 'bad.ntp.org', port: 123 },
+        { server: 'good.ntp.org', port: 123 },
+      ],
+    });
 
-    try { await sync.syncTime(); } catch { /* expected */ }
+    try {
+      await sync.syncTime();
+    } catch {
+      /* expected */
+    }
 
     expect(sync.getHistory().deltas).toHaveLength(0);
     expect(sync.getHistory().currentServer.server).toBe('good.ntp.org');
@@ -587,7 +633,11 @@ describe('maxSkewMs', () => {
     __setNextResponse(buildNtpPacket(serverTime));
     const sync = makeSync();
 
-    try { await sync.syncTime(); } catch { /* expected */ }
+    try {
+      await sync.syncTime();
+    } catch {
+      /* expected */
+    }
 
     expect(sync.getHistory().deltas).toHaveLength(0);
   });
@@ -597,7 +647,11 @@ describe('maxSkewMs', () => {
     __setNextResponse(buildNtpPacket(serverTime));
     const sync = makeSync({ maxSkewMs: 500 });
 
-    try { await sync.syncTime(); } catch { /* expected */ }
+    try {
+      await sync.syncTime();
+    } catch {
+      /* expected */
+    }
 
     expect(sync.getHistory().deltas).toHaveLength(0);
   });
@@ -614,12 +668,18 @@ describe('maxSkewMs', () => {
   it('rejected delta still triggers server rotation and error recording', async () => {
     const serverTime = Date.now() + 300_000; // way over
     __setNextResponse(buildNtpPacket(serverTime));
-    const sync = makeSync({ servers: [
-      { server: 'bad.ntp.org', port: 123 },
-      { server: 'good.ntp.org', port: 123 },
-    ]});
+    const sync = makeSync({
+      servers: [
+        { server: 'bad.ntp.org', port: 123 },
+        { server: 'good.ntp.org', port: 123 },
+      ],
+    });
 
-    try { await sync.syncTime(); } catch { /* expected */ }
+    try {
+      await sync.syncTime();
+    } catch {
+      /* expected */
+    }
 
     const history = sync.getHistory();
     expect(history.errors.length).toBeGreaterThan(0);
@@ -681,7 +741,7 @@ describe('offline reliability', () => {
     jest.advanceTimersByTime(10_000); // advance 10s on the monotonic clock
     const t1 = sync.getTime();
 
-    expect(Math.abs((t1 - t0) - 10_000)).toBeLessThan(50);
+    expect(Math.abs(t1 - t0 - 10_000)).toBeLessThan(50);
   });
 
   it('getTime is not affected by device clock changes while offline', async () => {
@@ -719,8 +779,8 @@ describe('offline reliability', () => {
     const t3 = sync.getTime();
 
     // Each 30s interval should advance by ~30s
-    expect(Math.abs((t2 - t1) - 30_000)).toBeLessThan(50);
-    expect(Math.abs((t3 - t2) - 30_000)).toBeLessThan(50);
+    expect(Math.abs(t2 - t1 - 30_000)).toBeLessThan(50);
+    expect(Math.abs(t3 - t2 - 30_000)).toBeLessThan(50);
   });
 
   it('median uses only valid samples when some syncs failed before going offline', async () => {
@@ -790,7 +850,11 @@ describe('importDeltas (secure monotonic-based)', () => {
 
     // Simulate deltas from a future boot (monotonic higher than current)
     sync.importDeltas([
-      { ntp: Date.now() + 1000, monotonic: performance.now() + 999_999, clock: 'elapsed' },
+      {
+        ntp: Date.now() + 1000,
+        monotonic: performance.now() + 999_999,
+        clock: 'elapsed',
+      },
     ]);
 
     // Should be empty — all deltas discarded
@@ -802,7 +866,9 @@ describe('importDeltas (secure monotonic-based)', () => {
     const sync = makeSync({ startOnline: false });
     const past = performance.now() - 2000; // 2s ago in the current boot
 
-    sync.importDeltas([{ ntp: Date.now() + 200, monotonic: past, clock: 'elapsed' }]);
+    sync.importDeltas([
+      { ntp: Date.now() + 200, monotonic: past, clock: 'elapsed' },
+    ]);
 
     const result = sync.getTime();
     // Projected = ntp + (perfNow - past) = ntp + ~2000
@@ -816,7 +882,7 @@ describe('importDeltas (secure monotonic-based)', () => {
 
     sync.importDeltas([
       { ntp: Date.now() + 100, monotonic: current, clock: 'elapsed' },
-      { ntp: Date.now() + 200, monotonic: future, clock: 'elapsed' },  // reboot — discarded
+      { ntp: Date.now() + 200, monotonic: future, clock: 'elapsed' }, // reboot — discarded
       { ntp: Date.now() + 300, monotonic: current - 500, clock: 'elapsed' }, // older, same boot — kept
     ]);
 
@@ -846,13 +912,15 @@ describe('importDeltas (secure monotonic-based)', () => {
     const sync = makeSync({ startOnline: false });
     const past = performance.now() - 2000;
 
-    sync.importDeltas([{ ntp: Date.now() + 1000, monotonic: past, clock: 'elapsed' }]);
+    sync.importDeltas([
+      { ntp: Date.now() + 1000, monotonic: past, clock: 'elapsed' },
+    ]);
 
     const t0 = sync.getTime();
     jest.advanceTimersByTime(5_000);
     const t1 = sync.getTime();
 
-    expect(Math.abs((t1 - t0) - 5_000)).toBeLessThan(50);
+    expect(Math.abs(t1 - t0 - 5_000)).toBeLessThan(50);
   });
 
   it('respects the history limit', () => {
@@ -919,7 +987,12 @@ describe('importDeltas (secure monotonic-based)', () => {
     expect(history.lastSyncTime).not.toBeNull();
 
     // Mutating the snapshot should not affect internal state
-    history.deltas.push({ dt: 999, ntp: 999, monotonic: 999, clock: 'elapsed' });
+    history.deltas.push({
+      dt: 999,
+      ntp: 999,
+      monotonic: 999,
+      clock: 'elapsed',
+    });
     expect(sync.getHistory().deltas).toHaveLength(2);
   });
 
@@ -931,7 +1004,9 @@ describe('importDeltas (secure monotonic-based)', () => {
     expect(sync.getHistory().deltas.length).toBe(1);
 
     const past = performance.now() - 500;
-    sync.importDeltas([{ ntp: Date.now() + 200, monotonic: past, clock: 'elapsed' }]);
+    sync.importDeltas([
+      { ntp: Date.now() + 200, monotonic: past, clock: 'elapsed' },
+    ]);
 
     const history = sync.getHistory();
     expect(history.deltas.length).toBe(1);
@@ -946,7 +1021,7 @@ describe('importDeltas (secure monotonic-based)', () => {
     sync.importDeltas([{ ntp, monotonic: past, clock: 'elapsed' }]);
 
     // Simulate export (what the consumer would persist)
-    const exported = sync.getHistory().deltas.map(d => ({
+    const exported = sync.getHistory().deltas.map((d) => ({
       ntp: d.ntp,
       monotonic: d.monotonic,
       clock: d.clock,
@@ -987,7 +1062,7 @@ describe('monotonic clock — sleep-aware (deep sleep)', () => {
 
     // With the pre-2.0.0 clock (performance.now / uptimeMillis, which pauses
     // during sleep) this would return ≈ ntp — the 8h of sleep is lost.
-    expect(Math.abs((t1 - t0) - sleepMs)).toBeLessThan(100);
+    expect(Math.abs(t1 - t0 - sleepMs)).toBeLessThan(100);
   });
 
   it('remains immune to wall-clock manipulation (monotonic +2h, wall clock +3h)', async () => {
@@ -1010,7 +1085,7 @@ describe('monotonic clock — sleep-aware (deep sleep)', () => {
     jest.restoreAllMocks();
 
     // Anchored to the monotonic clock: advances only the real elapsed time
-    expect(Math.abs((t1 - t0) - realElapsedMs)).toBeLessThan(100);
+    expect(Math.abs(t1 - t0 - realElapsedMs)).toBeLessThan(100);
   });
 });
 
@@ -1019,9 +1094,7 @@ describe('importDeltas clock compatibility', () => {
     const sync = makeSync({ startOnline: false });
     const perfNow = performance.now();
 
-    sync.importDeltas([
-      { ntp: Date.now() + 100, monotonic: perfNow },
-    ]);
+    sync.importDeltas([{ ntp: Date.now() + 100, monotonic: perfNow }]);
 
     // Old deltas used performance.now() (uptime, no deep sleep); projecting
     // them on the sleep-aware clock would silently add the total sleep time

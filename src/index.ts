@@ -67,7 +67,7 @@ export default class NTPSync {
     if (this.config.appStateSync) {
       const sub = AppState.addEventListener(
         'change',
-        this.handleAppStateChange,
+        this.handleAppStateChange
       ) as unknown as { remove: () => void };
       // Older React Native versions may return void here
       if (sub && typeof sub.remove === 'function') {
@@ -194,28 +194,31 @@ export default class NTPSync {
     // Only keep deltas from the current boot cycle, measured on the same
     // (sleep-aware) monotonic clock as the one in use now
     const valid = deltas.filter(
-      d => d.clock === MONOTONIC_CLOCK && perfNow >= d.monotonic
+      (d) => d.clock === MONOTONIC_CLOCK && perfNow >= d.monotonic
     );
 
     if (valid.length === 0) {
       return;
     }
 
-    const reanchored = valid.map(d => {
-      const projectedNtp = d.ntp + (perfNow - d.monotonic);
-      const dt = projectedNtp - Date.now();
-      return {
-        dt,
-        ntp: d.ntp,
-        monotonic: d.monotonic,
-        clock: MONOTONIC_CLOCK,
-      };
-    }).filter(d => Math.abs(d.dt) <= this.config.maxSkewMs);
+    const reanchored = valid
+      .map((d) => {
+        const projectedNtp = d.ntp + (perfNow - d.monotonic);
+        const dt = projectedNtp - Date.now();
+        return {
+          dt,
+          ntp: d.ntp,
+          monotonic: d.monotonic,
+          clock: MONOTONIC_CLOCK,
+        };
+      })
+      .filter((d) => Math.abs(d.dt) <= this.config.maxSkewMs);
 
     this.historyDetails.deltas = reanchored.slice(-this.limit);
 
     if (this.historyDetails.deltas.length > 0) {
-      const last = this.historyDetails.deltas[this.historyDetails.deltas.length - 1];
+      const last =
+        this.historyDetails.deltas[this.historyDetails.deltas.length - 1];
       this.historyDetails.lastNtpTime = last.ntp;
       this.historyDetails.lastSyncTime = Date.now();
     }
@@ -239,7 +242,7 @@ export default class NTPSync {
     }
 
     const perfNow = monotonicNow();
-    const projected = deltas.map(d => d.ntp + (perfNow - d.monotonic));
+    const projected = deltas.map((d) => d.ntp + (perfNow - d.monotonic));
 
     const sorted = [...projected].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
@@ -281,7 +284,7 @@ export default class NTPSync {
       this.historyDetails.currentConsecutiveErrorCount = 0;
       this.historyDetails.isInErrorState = false;
 
-      this.listeners.forEach(handler => handler(this.getHistory()));
+      this.listeners.forEach((handler) => handler(this.getHistory()));
 
       return true;
     } catch (err: any) {
@@ -334,4 +337,14 @@ export default class NTPSync {
   }
 }
 
-export { Config, Delta, DeltaImport, MonotonicClock, NtpDelta, NtpHistory, NtpServer, NtpClientError };
+export {
+  Config,
+  Delta,
+  DeltaImport,
+  MonotonicClock,
+  NtpDelta,
+  NtpHistory,
+  NtpServer,
+  NtpClientError,
+};
+export { MONOTONIC_CLOCK, monotonicNow };
