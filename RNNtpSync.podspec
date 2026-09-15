@@ -9,9 +9,8 @@ Pod::Spec.new do |s|
   s.homepage       = package_json['homepage']
   s.license        = package_json['license']
   s.author         = 'Ruanitto'
-  s.platform       = :ios, '9.0'
+  s.platform       = :ios, '10.0'
   s.source         = { :git => package_json['repository']['url'], :tag => "v#{s.version}" }
   s.source_files   = 'ios/**/*.{h,m,mm}'
-  s.framework      = 'QuartzCore'
   s.dependency 'React-Core'
 end
